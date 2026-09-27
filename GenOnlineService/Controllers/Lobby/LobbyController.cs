@@ -137,7 +137,8 @@ namespace GenOnlineService.Controllers
         JOINABILITY = 18,
 		HOST_ACTION_BULK_SLOT_UPDATE = 19,
 		HOST_ACTION_ARM_RESUME = 20,
-		LOCAL_PLAYER_HAS_RESUME_REPLAY = 21
+		LOCAL_PLAYER_HAS_RESUME_REPLAY = 21,
+		LOBBY_ENFORCE_RANDOM = 22
     };
 
 	public class RouteHandler_ResumeReplay_Result : APIResult
@@ -420,7 +421,8 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.JOINABILITY] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.HOST_ACTION_ARM_RESUME] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone
+			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone,
+			[ELobbyUpdateField.LOBBY_ENFORCE_RANDOM] = ELobbyUpdatePermissions.LobbyOwner
 		};
 
 		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
@@ -515,6 +517,32 @@ namespace GenOnlineService.Controllers
 									lobby.ClearResumeArm();
 								}
 
+								// While the host has enforce-random set, only Random (-1) is an
+								// acceptable faction or team. The client already locks its
+								// dropdowns, so this is for a client that does not, and for one
+								// that had a pick in flight when the host ticked the box. The
+								// host's Randomize roll arrives as a bulk slot update and is
+								// deliberately not covered: resolving the randoms is its job.
+								if (lobby.IsEnforceRandom)
+								{
+									if (field == ELobbyUpdateField.MY_SIDE || field == ELobbyUpdateField.AI_SIDE)
+									{
+										if (data.ContainsKey("side") && data["side"].GetInt32() >= 0)
+										{
+											result.success = true;
+											return result;
+										}
+									}
+									else if (field == ELobbyUpdateField.MY_TEAM || field == ELobbyUpdateField.AI_TEAM)
+									{
+										if (data.ContainsKey("team") && data["team"].GetInt32() >= 0)
+										{
+											result.success = true;
+											return result;
+										}
+									}
+								}
+
 								if (field == ELobbyUpdateField.LOBBY_MAP)
 								{
 									if (data.ContainsKey("map")
@@ -581,6 +609,15 @@ namespace GenOnlineService.Controllers
 
 										await using var db = await _dbFactory.CreateDbContextAsync();
 										await lobby.UpdateStartingCash(db, startingCash);
+									}
+								}
+								else if (field == ELobbyUpdateField.LOBBY_ENFORCE_RANDOM)
+								{
+									if (data.ContainsKey("enforce_random"))
+									{
+										bool bEnforceRandom = data["enforce_random"].GetBoolean();
+
+										lobby.UpdateEnforceRandom(bEnforceRandom);
 									}
 								}
 								else if (field == ELobbyUpdateField.LOBBY_LIMIT_SUPERWEAPONS)

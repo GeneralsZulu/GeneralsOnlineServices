@@ -572,6 +572,12 @@ namespace GenOnlineService
 		public bool IsVanillaTeamsOnly { get; private set; } = false;
 		public UInt32 StartingCash { get; private set; } = 0;
 		public bool IsLimitSuperweapons { get; private set; } = false;
+
+		// While set, every occupied slot's faction and team are locked to Random.
+		// The host's Randomize roll still resolves them to concrete values: it
+		// arrives as a bulk slot update, which the enforcement deliberately skips.
+		// Not a user favorite and not persisted: it is a rule for this lobby.
+		public bool IsEnforceRandom { get; private set; } = false;
 		public bool IsTrackingStats { get; private set; } = false;
 		public bool IsPassworded { get; private set; } = false;
 
@@ -1417,6 +1423,24 @@ public async Task FinalizeACChecks()
 			DirtyRetransmitLobbyList();
 		}
 
+		public void UpdateEnforceRandom(bool bEnforceRandom)
+		{
+			IsEnforceRandom = bEnforceRandom;
+
+			if (bEnforceRandom)
+			{
+				// Snap what is already picked back to Random, so ticking the box
+				// means the same thing whether the lobby filled before or after.
+				foreach (var member in Members)
+				{
+					member.ForceRandomSideAndTeam();
+				}
+			}
+
+			ClearResumeArm(); // the recording fixes the factions and the teams
+			DirtyRetransmitLobbyList();
+		}
+
 		public async Task UpdateLimitSuperweapons(AppDbContext _db, bool bLimitSuperweapons)
 		{
 			IsLimitSuperweapons = bLimitSuperweapons;
@@ -1883,6 +1907,33 @@ public async Task FinalizeACChecks()
 			Team = team;
 
 			DirtyRetransmit();
+		}
+
+		/// <summary>
+		/// Puts this member back on a random faction and a random team, for a host who has
+		/// just switched enforce-random on. An observer (side -2) keeps the side that makes
+		/// it an observer; only a concrete faction is taken away. Favorites are left alone:
+		/// the player did not change their preference, the lobby stopped honouring it.
+		/// </summary>
+		public void ForceRandomSideAndTeam()
+		{
+			bool bChanged = false;
+
+			if (Side >= 0)
+			{
+				Side = -1;
+				bChanged = true;
+			}
+			if (Team >= 0)
+			{
+				Team = -1;
+				bChanged = true;
+			}
+
+			if (bChanged)
+			{
+				DirtyRetransmit();
+			}
 		}
 
 		public void UpdateHasMap(bool bHasMap)
