@@ -1388,13 +1388,16 @@ public async Task FinalizeACChecks()
 		public async Task UpdateMap(AppDbContext _db, string strMap, string strMapPath, bool bOfficialMap, int newMaxPlayers, UInt32 map_crc = 0)
 		{
 			int oldMaxPlayers = MaxPlayers;
+			// TheSuperHackers @feature bill-rich 11/10/2026 A no-op update (same map, cash or limit) must not
+			// disarm a resume: the arming client re-sends the recording's settings and its own UI echoes them.
+			bool bMapChanged = MapName != strMap || MapPath != FixMapPathForGame(strMapPath) || MapCRC != map_crc || oldMaxPlayers != newMaxPlayers;
 			MapName = strMap;
 			MapPath = FixMapPathForGame(strMapPath);
 			IsMapOfficial = bOfficialMap;
+			MapCRC = map_crc;
 
 			// close any slots that were open and now below the max, open anything not already occupied, up to new max
 			foreach (var slot in Members)
-			MapCRC = map_crc;
 			{
 				if (slot.SlotIndex < newMaxPlayers)
 				{
@@ -1419,17 +1422,24 @@ public async Task FinalizeACChecks()
 				await Database.Users.SetFavorite_Map(_db, Owner, strMapPath);
 			}
 
-			ClearResumeArm(); // the recording fixes the map
+			if (bMapChanged)
+			{
+				ClearResumeArm(); // the recording fixes the map
+			}
 			DirtyRetransmitLobbyList();
 		}
 
 		public async Task UpdateStartingCash(AppDbContext _db, UInt32 newStartingCash)
 		{
+			bool bChanged = StartingCash != newStartingCash;
 			StartingCash = newStartingCash;
 
 			await Database.Users.SetFavorite_StartingMoney(_db, Owner, (int)newStartingCash);
 
-			ClearResumeArm(); // the recording fixes the starting cash
+			if (bChanged)
+			{
+				ClearResumeArm(); // the recording fixes the starting cash
+			}
 			DirtyRetransmitLobbyList();
 		}
 
@@ -1453,11 +1463,15 @@ public async Task FinalizeACChecks()
 
 		public async Task UpdateLimitSuperweapons(AppDbContext _db, bool bLimitSuperweapons)
 		{
+			bool bChanged = IsLimitSuperweapons != bLimitSuperweapons;
 			IsLimitSuperweapons = bLimitSuperweapons;
 
 			await Database.Users.SetFavorite_LimitSuperweapons(_db, Owner, bLimitSuperweapons);
 
-			ClearResumeArm(); // the recording fixes the superweapon limit
+			if (bChanged)
+			{
+				ClearResumeArm(); // the recording fixes the superweapon limit
+			}
 			DirtyRetransmitLobbyList();
 		}
 
@@ -1582,6 +1596,92 @@ public async Task FinalizeACChecks()
 		/// takes the replay's seed as the lobby seed; either way every member starts out not holding
 		/// the source (the host flags itself right after, guests after downloading).
 		/// </summary>
+		/// <summary>
+		/// TheSuperHackers @feature bill-rich 11/10/2026 Resume-from-replay: rebuilds the slot table the way
+		/// the host's recording had it (HOST_ACTION_ALIGN_SLOTS). Humans are moved, not re-created, so their
+		/// sessions and mesh state carry over; AI, open and closed slots are fresh placeholders. Nothing is
+		/// applied unless the whole request is acceptable: all eight slots named, every current human placed
+		/// exactly once, no stranger, the owner in slot 0. Returns null on success, else the reason.
+		/// </summary>
+		public async Task<string?> AlignSlots(List<LobbySlotSpec> specs)
+		{
+			await g_SlotLock.WaitAsync();
+			try
+			{
+				if (State != ELobbyState.GAME_SETUP)
+				{
+					return "the game has already started";
+				}
+				if (specs.Count != maxLobbySize)
+				{
+					return "every slot must be named";
+				}
+				LobbyMember[] newMembers = new LobbyMember[maxLobbySize];
+				HashSet<Int64> placed = new HashSet<Int64>();
+				foreach (LobbySlotSpec spec in specs)
+				{
+					if (spec.SlotIndex < 0 || spec.SlotIndex >= maxLobbySize || newMembers[spec.SlotIndex] != null)
+					{
+						return "a slot was named twice or out of range";
+					}
+					if (spec.SlotState == EPlayerType.SLOT_PLAYER)
+					{
+						LobbyMember? human = GetMemberFromUserID(spec.UserID);
+						if (human == null)
+						{
+							return "a player named for a slot is not in the lobby";
+						}
+						if (!placed.Add(spec.UserID))
+						{
+							return "a player was named for two slots";
+						}
+						if ((spec.SlotIndex == 0) != (spec.UserID == Owner))
+						{
+							return "the host must stay in slot 1";
+						}
+						newMembers[spec.SlotIndex] = human;
+					}
+					else if ((int)spec.SlotState >= (int)EPlayerType.SLOT_OPEN && (int)spec.SlotState <= (int)EPlayerType.SLOT_PLAYER + 1) // + 1: the client's Tactical AI kind, which SET_SLOT_STATE already lets through
+					{
+						newMembers[spec.SlotIndex] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, spec.Side, spec.Color, spec.StartPos, spec.SlotState, (UInt16)spec.SlotIndex, true);
+					}
+					else
+					{
+						return "unknown slot kind";
+					}
+				}
+				foreach (LobbyMember member in Members)
+				{
+					if (member.SlotState == EPlayerType.SLOT_PLAYER && !placed.Contains(member.UserID))
+					{
+						return String.Format("{0} was not given a slot", member.DisplayName);
+					}
+				}
+				// Accepted: apply. Moved humans keep their member object (session, mesh id, favorites).
+				foreach (LobbySlotSpec spec in specs)
+				{
+					LobbyMember member = newMembers[spec.SlotIndex];
+					if (spec.SlotState == EPlayerType.SLOT_PLAYER)
+					{
+						member.UpdateSlotIndex((UInt16)spec.SlotIndex);
+						member.ApplyRolledSlot(spec.Side, spec.Color, spec.StartPos, spec.Team);
+					}
+					else
+					{
+						member.SetPlayerSlotState(spec.SlotState); // marks an AI ready
+						member.UpdateTeam(spec.Team);
+					}
+				}
+				Members = newMembers;
+			}
+			finally
+			{
+				g_SlotLock.Release();
+			}
+			DirtyRetransmitLobbyList();
+			return null;
+		}
+
 		public bool UpdateResumeArm(UInt32 handoffFrame, int rngSeed)
 		{
 			if (handoffFrame == 0)
@@ -1738,6 +1838,20 @@ public async Task FinalizeACChecks()
 		}
 
 	}
+	/// <summary>
+	/// TheSuperHackers @feature bill-rich 11/10/2026 One slot of a HOST_ACTION_ALIGN_SLOTS request (see Lobby.AlignSlots).
+	/// </summary>
+	public class LobbySlotSpec
+	{
+		public int SlotIndex = -1;
+		public EPlayerType SlotState = EPlayerType.SLOT_OPEN;
+		public Int64 UserID = -1;
+		public int Side = -1;
+		public int Color = -1;
+		public int StartPos = -1;
+		public int Team = -1;
+	}
+
 	public class LobbyMember
 	{
 		public Int64 UserID { get; private set; } = -999999;

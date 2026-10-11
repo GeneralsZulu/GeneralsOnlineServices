@@ -106,6 +106,8 @@ namespace GenOnlineService.Controllers
 		}
 
 		public bool success { get; set; } = false;
+		// TheSuperHackers @feature bill-rich 11/10/2026 Why a refused host action was refused, for the lobby chat. Empty on success.
+		public string error { get; set; } = String.Empty;
 	}
 
     public enum ELobbyJoinability
@@ -138,7 +140,10 @@ namespace GenOnlineService.Controllers
 		HOST_ACTION_BULK_SLOT_UPDATE = 19,
 		HOST_ACTION_ARM_RESUME = 20,
 		LOCAL_PLAYER_HAS_RESUME_REPLAY = 21,
-		LOBBY_ENFORCE_RANDOM = 22
+		LOBBY_ENFORCE_RANDOM = 22,
+		// TheSuperHackers @feature bill-rich 11/10/2026 Resume-from-replay: the host places every
+		// slot (occupant, kind, faction, color, start position, team) the way the recording had it.
+		HOST_ACTION_ALIGN_SLOTS = 23
     };
 
 	public class RouteHandler_ResumeReplay_Result : APIResult
@@ -422,7 +427,8 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.HOST_ACTION_ARM_RESUME] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone,
-			[ELobbyUpdateField.LOBBY_ENFORCE_RANDOM] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.LOBBY_ENFORCE_RANDOM] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner
 		};
 
 		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
@@ -512,7 +518,8 @@ namespace GenOnlineService.Controllers
 									|| field == ELobbyUpdateField.AI_TEAM
 									|| field == ELobbyUpdateField.AI_START_POS
 									|| field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE
-									|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE)
+									|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE
+									|| field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
 								{
 									lobby.ClearResumeArm();
 								}
@@ -555,13 +562,6 @@ namespace GenOnlineService.Controllers
 										bool bOfficialMap = data["map_official"].GetBoolean();
 										int maxPlayers = data["max_players"].GetInt32();
 
-										if (strMap != null && strMapPath != null)
-										{
-											await using var db = await _dbFactory.CreateDbContextAsync();
-											await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers, mapCRC);
-										}
-									}
-								}
 										// TheSuperHackers @feature bill-rich 02/10/2026 Optional: a member
 										// without this map fetches it from the cncstats store by CRC. Older
 										// clients do not send it, hence the ContainsKey guard and the 0.
@@ -571,6 +571,13 @@ namespace GenOnlineService.Controllers
 											data["map_crc"].TryGetUInt32(out mapCRC);
 										}
 
+										if (strMap != null && strMapPath != null)
+										{
+											await using var db = await _dbFactory.CreateDbContextAsync();
+											await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers, mapCRC);
+										}
+									}
+								}
 								else if (field == ELobbyUpdateField.MY_SIDE)
 								{
 									if (data.ContainsKey("side")
@@ -827,6 +834,49 @@ namespace GenOnlineService.Controllers
 										}
 										lobby.DirtyRetransmit();
 									}
+								}
+								else if (field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
+								{
+									// Resume-from-replay: the recording fixes who sat where, so the host sends the whole
+									// arrangement in one request and the lobby is rebuilt to match. Every current human
+									// must be placed exactly once and the owner must stay in slot 0; anything else is
+									// refused with a reason the host can show, and the lobby is left as it was.
+									if (!data.ContainsKey("slots") || data["slots"].ValueKind != JsonValueKind.Array)
+									{
+										Response.StatusCode = (int)HttpStatusCode.BadRequest;
+										result.success = false;
+										result.error = "no slots";
+										return result;
+									}
+									List<LobbySlotSpec> specs = new List<LobbySlotSpec>();
+									foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
+									{
+										LobbySlotSpec spec = new LobbySlotSpec();
+										if (!slotEntry.TryGetProperty("slot_index", out var idxProp) || !idxProp.TryGetInt32(out spec.SlotIndex)
+											|| !slotEntry.TryGetProperty("slot_state", out var stateProp) || !stateProp.TryGetInt32(out int stateInt))
+										{
+											Response.StatusCode = (int)HttpStatusCode.BadRequest;
+											result.success = false;
+											result.error = "malformed slot entry";
+											return result;
+										}
+										spec.SlotState = (EPlayerType)stateInt;
+										spec.UserID = slotEntry.TryGetProperty("user_id", out var uidProp) && uidProp.TryGetInt64(out Int64 uid) ? uid : -1;
+										spec.Side = slotEntry.TryGetProperty("side", out var sideProp) && sideProp.TryGetInt32(out int side) ? side : -1;
+										spec.Color = slotEntry.TryGetProperty("color", out var colorProp) && colorProp.TryGetInt32(out int color) ? color : -1;
+										spec.StartPos = slotEntry.TryGetProperty("start_pos", out var spProp) && spProp.TryGetInt32(out int sp) ? sp : -1;
+										spec.Team = slotEntry.TryGetProperty("team", out var teamProp) && teamProp.TryGetInt32(out int team) ? team : -1;
+										specs.Add(spec);
+									}
+									string? alignError = await lobby.AlignSlots(specs);
+									if (alignError != null)
+									{
+										Response.StatusCode = (int)HttpStatusCode.Conflict;
+										result.success = false;
+										result.error = alignError;
+										return result;
+									}
+									result.success = true;
 								}
 								else if (field == ELobbyUpdateField.HOST_ACTION_ARM_RESUME)
 								{
