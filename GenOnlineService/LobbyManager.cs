@@ -71,6 +71,14 @@ namespace GenOnlineService
 		public string MapName { get; private set; } = "";
 		public string MapPath { get; private set; } = "";
 		public bool IsMapOfficial { get; private set; } = false;
+		// TheSuperHackers @feature bill-rich 02/10/2026 CRC of the lobby's map, as the
+		// hosting client computed it. In-memory only, like IsEnforceRandom, not a DB
+		// column and not a user favourite. It exists so a member who does not have the
+		// map can fetch exactly that map from the cncstats store, which is keyed by CRC;
+		// matching on name would risk installing a different build of the same map, and
+		// the join CRC check would then reject it anyway. 0 means "the host did not say",
+		// which is what every pre-2.0.2 client sends.
+		public UInt32 MapCRC { get; private set; } = 0;
 		public UInt64 MatchID { get; private set; } = 0;
 
 		public DateTime TimeCreated { get; private set; } = DateTime.UtcNow;
@@ -707,7 +715,7 @@ namespace GenOnlineService
 
 		public Lobby(Int64 lobby_id, UserSession owner, string name, ELobbyState state, string map_name, string map_path, bool vanilla_teams, UInt32 starting_cash, bool limit_superweapons,
 			bool track_stats, bool passworded, string password, bool map_official, int rng_seed, Int16 network_room, bool allow_observers, UInt16 max_cam_height, UInt32 exe_crc, UInt32 ini_crc,
-			int max_players, ELobbyType lobbyType, EKnownAnticheatID inAnticheatID)
+			int max_players, ELobbyType lobbyType, EKnownAnticheatID inAnticheatID, UInt32 map_crc = 0)
 		{
 			LobbyID = lobby_id;
 			Owner = owner.m_UserID;
@@ -735,6 +743,7 @@ namespace GenOnlineService
 			MapName = map_name;
 			MapPath = FixMapPathForGame(map_path);
 			IsMapOfficial = map_official;
+			MapCRC = map_crc;
 			IsVanillaTeamsOnly = vanilla_teams;
 			StartingCash = starting_cash;
 			IsLimitSuperweapons = limit_superweapons;
@@ -1376,7 +1385,7 @@ public async Task FinalizeACChecks()
 			return strMapPath;
 		}
 
-		public async Task UpdateMap(AppDbContext _db, string strMap, string strMapPath, bool bOfficialMap, int newMaxPlayers)
+		public async Task UpdateMap(AppDbContext _db, string strMap, string strMapPath, bool bOfficialMap, int newMaxPlayers, UInt32 map_crc = 0)
 		{
 			int oldMaxPlayers = MaxPlayers;
 			MapName = strMap;
@@ -1385,6 +1394,7 @@ public async Task FinalizeACChecks()
 
 			// close any slots that were open and now below the max, open anything not already occupied, up to new max
 			foreach (var slot in Members)
+			MapCRC = map_crc;
 			{
 				if (slot.SlotIndex < newMaxPlayers)
 				{
@@ -2039,7 +2049,7 @@ public async Task FinalizeACChecks()
 
 		public async Task<Int64> CreateLobby(AppDbContext _db, UserSession owningSession, string strOwnerDisplayName, string strName, string strMapName, string strMapPath, bool bMapOfficial, int maxPlayers, string HostIPAddr,
 			UInt16 hostPreferredPort, bool bVanillaTeams, bool bTrackStats, UInt32 default_starting_cash, bool bPassworded, String strPassword, Int16 parentNetworkRoom, bool bAllowObservers,
-			UInt16 maxCamHeight, UInt32 exe_crc, UInt32 ini_crc, ELobbyType lobbyType, EKnownAnticheatID anticheatID)
+			UInt16 maxCamHeight, UInt32 exe_crc, UInt32 ini_crc, ELobbyType lobbyType, EKnownAnticheatID anticheatID, UInt32 map_crc = 0)
 		{
 			Console.WriteLine("Created lobby");
 			// cant own two lobbies at once, unless in gameplay
@@ -2068,7 +2078,7 @@ public async Task FinalizeACChecks()
 				}
 			}
 
-			Lobby newLobby = new Lobby(newLobbyID, owningSession, strName, ELobbyState.GAME_SETUP, strMapName, strMapPath, bVanillaTeams, starting_cash, bLimitSuperweapons, bTrackStats, bPassworded, strPassword, bMapOfficial, rng_seed, parentNetworkRoom, bAllowObservers, maxCamHeight, exe_crc, ini_crc, maxPlayers, lobbyType, anticheatID);
+			Lobby newLobby = new Lobby(newLobbyID, owningSession, strName, ELobbyState.GAME_SETUP, strMapName, strMapPath, bVanillaTeams, starting_cash, bLimitSuperweapons, bTrackStats, bPassworded, strPassword, bMapOfficial, rng_seed, parentNetworkRoom, bAllowObservers, maxCamHeight, exe_crc, ini_crc, maxPlayers, lobbyType, anticheatID, map_crc);
 			m_dictLobbies[newLobbyID] = newLobby;
 
 			newLobby.OnLobbyNeedsDestroyed += HandleLobbyNeedsDestroyed;

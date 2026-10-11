@@ -558,10 +558,19 @@ namespace GenOnlineService.Controllers
 										if (strMap != null && strMapPath != null)
 										{
 											await using var db = await _dbFactory.CreateDbContextAsync();
-											await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers);
+											await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers, mapCRC);
 										}
 									}
 								}
+										// TheSuperHackers @feature bill-rich 02/10/2026 Optional: a member
+										// without this map fetches it from the cncstats store by CRC. Older
+										// clients do not send it, hence the ContainsKey guard and the 0.
+										UInt32 mapCRC = 0;
+										if (data.ContainsKey("map_crc"))
+										{
+											data["map_crc"].TryGetUInt32(out mapCRC);
+										}
+
 								else if (field == ELobbyUpdateField.MY_SIDE)
 								{
 									if (data.ContainsKey("side")
