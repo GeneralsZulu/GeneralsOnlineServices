@@ -2553,6 +2553,21 @@ namespace GenOnlineService
 	{
 		private static ConcurrentDictionary<Int64, string> g_DictTURNUsernames = new();
 
+		// A private instance can run with no TURN provider at all. Callers use this
+		// to skip the credential round trip instead of throwing, so a lobby still
+		// opens and the mesh falls back to direct and STUN candidates.
+		public static bool IsTURNConfigured()
+		{
+			IConfigurationSection? turnSettings = Program.g_Config?.GetSection("TURN");
+			if (turnSettings == null)
+			{
+				return false;
+			}
+
+			return !String.IsNullOrEmpty(turnSettings.GetValue<string>("key"))
+				&& !String.IsNullOrEmpty(turnSettings.GetValue<string>("token"));
+		}
+
 		private static void GetTURNConfig(out int TTL, out string token, out string key, out bool bShouldInvalidateTokensAutomatically)
 		{
 			TTL = -1;
@@ -2609,6 +2624,11 @@ namespace GenOnlineService
 			await Task.Delay(1);
 			return fakeCreds;
 #endif
+			if (!IsTURNConfigured())
+			{
+				return null;
+			}
+
 			GetTURNConfig(out int TurnTTL, out string TurnToken, out string TurnKey, out bool bShouldInvalidateTokensAutomatically);
 
 			// we should only have 1 turn credential at a time... clean it up
@@ -2717,6 +2737,11 @@ namespace GenOnlineService
             await Task.Delay(1);
             return;
 #endif
+
+			if (!IsTURNConfigured())
+			{
+				return;
+			}
 
             GetTURNConfig(out int TurnTTL, out string TurnToken, out string TurnKey, out bool bShouldInvalidateTokensAutomatically);
 
