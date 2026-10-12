@@ -120,23 +120,24 @@ namespace GenOnlineService.Controllers
 							// in DEBUG, just accept any token for dev...
 #if DEBUG
 							{
-								Int64 highestIDFound = 0;
-								// which account should we use?
+								// which account should we use? The lowest id with no live session, so a
+								// dev client that restarts gets its own account back instead of a new name.
+								HashSet<Int64> liveIDs = new HashSet<Int64>();
 								var sessions = WebSocketManager.GetUserDataCache();
 								foreach (var sessionDataByClient in sessions)
 								{
 									foreach (var sessionData in sessionDataByClient.Value)
 									{
-										UserSession sessIter = sessionData.Value;
-										if (sessIter.m_UserID > highestIDFound)
-										{
-											highestIDFound = (Int64)sessIter.m_UserID;
-										}
+										liveIDs.Add((Int64)sessionData.Value.m_UserID);
 									}
 								}
 
 								// for dev, it wont have a user_id because it didnt go through the normal flow, so make one
-								Int64 user_id = highestIDFound + 1;
+								Int64 user_id = 1;
+								while (liveIDs.Contains(user_id))
+								{
+									++user_id;
+								}
 
 								bool bTestSPOP = false;
 								if (bTestSPOP)

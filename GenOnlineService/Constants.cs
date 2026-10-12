@@ -2620,9 +2620,14 @@ namespace GenOnlineService
 		public static async Task<TURNCredentialContainer?> CreateCredentialsForUser(Int64 userID)
 		{
 #if DEBUG
-			TURNCredentialContainer fakeCreds = new("fake", "fake");
-			await Task.Delay(1);
-			return fakeCreds;
+			// A lab instance with no TURN provider hands out placeholder credentials;
+			// one with a provider configured issues real ones, so the relay path can be tested.
+			if (!IsTURNConfigured())
+			{
+				TURNCredentialContainer fakeCreds = new("fake", "fake");
+				await Task.Delay(1);
+				return fakeCreds;
+			}
 #endif
 			if (!IsTURNConfigured())
 			{
@@ -2734,8 +2739,11 @@ namespace GenOnlineService
 		public static async Task DeleteCredentialsForUser(Int64 userID)
 		{
 #if DEBUG
-            await Task.Delay(1);
-            return;
+			if (!IsTURNConfigured())
+			{
+				await Task.Delay(1);
+				return;
+			}
 #endif
 
 			if (!IsTURNConfigured())
