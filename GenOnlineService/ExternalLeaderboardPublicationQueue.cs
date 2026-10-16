@@ -62,6 +62,12 @@ namespace GenOnlineService
 		{
 			// This worker is intentionally a single consumer. Use a distributed queue before
 			// running more than one service instance.
+			if (!ExternalLeaderboardsClient.IsPostConfigured)
+			{
+				ExternalLeaderboardsClient.LogNotConfiguredOnce("match publication");
+				return 0;
+			}
+
 			List<Database.ExternalPublicationWorkItem> pending;
 			await using (AppDbContext db = await _dbFactory.CreateDbContextAsync(stoppingToken))
 			{

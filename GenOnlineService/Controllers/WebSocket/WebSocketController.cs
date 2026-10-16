@@ -32,6 +32,8 @@ namespace GenOnlineService.Controllers
 {
 	public class WebSocketController : ControllerBase
 	{
+		private static int s_loggedModuleReviewOff = 0;
+
 		private readonly LobbyManager _lobbyManager;
 		private readonly IDbContextFactory<AppDbContext> _dbFactory;
 
@@ -1211,6 +1213,24 @@ namespace GenOnlineService.Controllers
 							JsonElement respElement = data["resp"];
 							List<List<object>> result = JsonSerializer.Deserialize<List<List<object>>>(respElement.GetRawText(), JsonOpts);
 							//Console.WriteLine("Len: {0}", result.Count);
+
+							// TheSuperHackers @bugfix bill-rich 16/10/2026 Module review needs a whitelist to review
+							// against. Without AC.allowed_modules / allowed_module_paths in the config every module of
+							// every player is "not whitelisted", and each one is an insert into ac_reviews_modules
+							// (5131 failures on 2026-10-14, one per DLL). No whitelist means the review is off.
+							bool bModuleReviewConfigured = false;
+							if (Program.g_Config != null)
+							{
+								IConfigurationSection acSection = Program.g_Config.GetSection("AC");
+								bModuleReviewConfigured = acSection.Exists()
+									&& (acSection.GetSection("allowed_modules").Exists() || acSection.GetSection("allowed_module_paths").Exists());
+							}
+							if (!bModuleReviewConfigured)
+							{
+								if (Interlocked.Exchange(ref s_loggedModuleReviewOff, 1) == 0)
+									Console.WriteLine("[INFO] AC module review is off: no AC.allowed_modules / allowed_module_paths in config.");
+								result.Clear();
+							}
 
 							foreach (List<object> moduleData in result)
 							{

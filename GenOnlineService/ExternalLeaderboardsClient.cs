@@ -33,6 +33,29 @@ namespace GenOnlineService
 
     public static class ExternalLeaderboardsClient
     {
+        // TheSuperHackers @bugfix bill-rich 16/10/2026 The external leaderboard is optional. Every
+        // caller used to find out it was absent by catching the config exception, once per match
+        // (publication) or once per login (Elo lookup), and logging it as an error each time.
+        public static bool IsPostConfigured => HasConfigValue("PostUrl") && HasConfigValue("PostToken");
+        public static bool IsGetConfigured => HasConfigValue("GetUrl") && HasConfigValue("GetToken");
+
+        private static bool HasConfigValue(string key)
+        {
+            if (Program.g_Config == null)
+                return false;
+            IConfigurationSection section = Program.g_Config.GetSection("ExternalLeaderboards");
+            return section.Exists() && !string.IsNullOrEmpty(section.GetValue<string>(key));
+        }
+
+        private static int s_loggedNotConfigured = 0;
+
+        /// <summary>Says once, at the first use, that the external leaderboard is off.</summary>
+        public static void LogNotConfiguredOnce(string what)
+        {
+            if (Interlocked.Exchange(ref s_loggedNotConfigured, 1) == 0)
+                Console.WriteLine($"[INFO] ExternalLeaderboards is not configured (no PostUrl/GetUrl in config); {what} is disabled.");
+        }
+
         private static IConfigurationSection GetExternalLeaderboardsConfigSection()
         {
             if (Program.g_Config == null)

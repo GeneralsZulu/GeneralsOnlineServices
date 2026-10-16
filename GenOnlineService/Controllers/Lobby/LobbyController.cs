@@ -508,8 +508,15 @@ namespace GenOnlineService.Controllers
 
 								// Resume-from-replay: the recording fixes every slot's occupant, faction, color, start
 								// position and team (the map, cash and superweapon handlers disarm inside the lobby), so
-								// any slot change disarms. The host re-arms after fixing the lobby.
-								if (field == ELobbyUpdateField.MY_SIDE
+								// a slot change disarms. The host re-arms after fixing the lobby.
+								//
+								// TheSuperHackers @bugfix bill-rich 16/10/2026 Decided after the update, on whether the
+								// roster actually changed, not on the field name. The arming client's own UI echoes the
+								// slot it was just moved to (MY_SIDE / MY_COLOR / MY_START_POS with the values the
+								// alignment set), and HOST_ACTION_ALIGN_SLOTS is the first half of arming itself; both
+								// used to disarm the arm that had just been made, so the host had to arm twice
+								// (2026-10-14: "Resume disarmed: the next start is a fresh game" right after every arm).
+								bool bSlotField = field == ELobbyUpdateField.MY_SIDE
 									|| field == ELobbyUpdateField.MY_COLOR
 									|| field == ELobbyUpdateField.MY_START_POS
 									|| field == ELobbyUpdateField.MY_TEAM
@@ -518,11 +525,8 @@ namespace GenOnlineService.Controllers
 									|| field == ELobbyUpdateField.AI_TEAM
 									|| field == ELobbyUpdateField.AI_START_POS
 									|| field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE
-									|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE
-									|| field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
-								{
-									lobby.ClearResumeArm();
-								}
+									|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE;
+								string strRosterBefore = bSlotField ? lobby.RosterFingerprint() : String.Empty;
 
 								// While the host has enforce-random set, only Random (-1) is an
 								// acceptable faction or team. The client already locks its
@@ -871,6 +875,7 @@ namespace GenOnlineService.Controllers
 									string? alignError = await lobby.AlignSlots(specs);
 									if (alignError != null)
 									{
+										Console.WriteLine($"[Lobby {lobby.LobbyID}] Resume: ALIGN_SLOTS from user {user_id} refused: {alignError}");
 										Response.StatusCode = (int)HttpStatusCode.Conflict;
 										result.success = false;
 										result.error = alignError;
@@ -937,6 +942,11 @@ namespace GenOnlineService.Controllers
 										result.success = false;
 										return result;
 									}
+								}
+
+								if (bSlotField && lobby.RosterFingerprint() != strRosterBefore)
+								{
+									lobby.ClearResumeArm($"slot change ({field}) by user {user_id}");
 								}
                             }
                         }

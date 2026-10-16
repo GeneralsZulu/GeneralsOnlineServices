@@ -685,10 +685,8 @@ namespace GenOnlineService
 								Console.WriteLine($"[WARN] DeleteSession(false): skipped RecordPlayerIngameAbandon for user {user_id} — lobby={sourceData.currentLobbyID} found={ingameLobby != null} state={ingameLobby?.State}");
 							}
 						}
-						else
-						{
-							Console.WriteLine($"[WARN] DeleteSession(false): skipped RecordPlayerIngameAbandon for user {user_id} — currentLobbyID==-1 (session has no lobby)");
-						}
+						// currentLobbyID == -1 is the ordinary case (a session that was never in a lobby) and
+						// needs no line; 2026-10-14 logged it 33 times for nothing.
 					}
 					catch (Exception ex)
 					{
@@ -887,7 +885,9 @@ namespace GenOnlineService
 				}
 				else
 				{
-					Console.WriteLine("Error: Could not find shared data for user {0} when deleting session", userID);
+					// Expected when a duplicate session was evicted first (StartSession deletes the other
+					// sessions of a re-logging user) and already released the shared data.
+					Console.WriteLine("[INFO] No shared data for user {0} when deleting session (already released by another session)", userID);
 				}
 			}
 			catch

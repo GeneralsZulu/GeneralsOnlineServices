@@ -709,6 +709,33 @@ namespace Database
 					return;
 				}
 
+				// 6b. A match nobody got to play has no winner. 2026-10-14: three 8-player games died at
+				//     frame 30 (one client gone a second after the start, the rest self-quit within ten
+				//     seconds) and the fallback below declared four winners and four losers for each. If the
+				//     last human to go left within c_MinPlayedSecondsForTimestampFallback of the start, the
+				//     order they left in says nothing about who was winning: leave every won flag clear.
+				if (lobby.TimeStarted.HasValue)
+				{
+					DateTime lastLeave = DateTime.MinValue;
+					foreach (var kv in lobby.TimePlayerAbandonedIngame)
+						if (kv.Value > lastLeave) lastLeave = kv.Value;
+					foreach (var kv in lobby.TimeMemberLeft)
+						if (kv.Value > lastLeave) lastLeave = kv.Value;
+					double playedSeconds = (lastLeave - lobby.TimeStarted.Value).TotalSeconds;
+					if (lastLeave != DateTime.MinValue && playedSeconds < c_MinPlayedSecondsForTimestampFallback)
+					{
+						Console.WriteLine($"[WinnerDet] Match={lobby.MatchID} LobbyID={lobby.LobbyID}: no winner in DB and the last player left {playedSeconds:F0}s after the start (< {c_MinPlayedSecondsForTimestampFallback}s): nobody played this match, clearing won flags.");
+						foreach (var kv in members)
+						{
+							if (kv.Value.side == Constants.OBSERVER_SIDE_VALUE)
+								continue;
+
+							await UpdateMatchHistorySetWinFlag(db, lobby.MatchID, kv.Key, false, cancellationToken);
+						}
+						return;
+					}
+				}
+
 				// 7. No winner — determine who quit last (= winner) using the most accurate timing available.
 				//    Prefer TimePlayerAbandonedIngame (recorded the instant each player's WS dropped while
 				//    in-game) over TimeMemberLeft (recorded when the player was structurally removed from the
@@ -1031,6 +1058,10 @@ namespace Database
 			}
 		}
 
+		// Below this many seconds between the match start and the last player leaving, the
+		// last-to-leave fallback in DetermineLobbyWinnerIfNotPresent names nobody.
+		private const int c_MinPlayedSecondsForTimestampFallback = 90;
+
 		// Called when a lobby is deleted, thats the true end of a match
 		public static async Task FinalizeAndScheduleExternalPublication(
 			AppDbContext db,
@@ -1077,6 +1108,15 @@ namespace Database
 		{
 			if (matchId == 0)
 				return;
+
+			// No external leaderboard configured (the self-hosted service feeds radarvan through the
+			// client instead): nothing to queue, and queuing anyway cost 11 matches a night a retry
+			// ladder ending in "stopped after N attempts".
+			if (!ExternalLeaderboardsClient.IsPostConfigured)
+			{
+				ExternalLeaderboardsClient.LogNotConfiguredOnce("match publication");
+				return;
+			}
 
 			bool exists = await db.ExternalPublications.AnyAsync(p => p.MatchId == (long)matchId, cancellationToken);
 			if (!exists)

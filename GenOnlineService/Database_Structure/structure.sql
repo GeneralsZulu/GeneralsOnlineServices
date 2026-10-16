@@ -238,3 +238,14 @@ CREATE TABLE IF NOT EXISTS `users` (
 /*!40014 SET FOREIGN_KEY_CHECKS=IFNULL(@OLD_FOREIGN_KEY_CHECKS, 1) */;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40111 SET SQL_NOTES=IFNULL(@OLD_SQL_NOTES, 1) */;
+
+CREATE TABLE IF NOT EXISTS `ac_reviews_modules` (
+  `report_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `match_id` bigint(20) unsigned NOT NULL,
+  `module_name` varchar(128) NOT NULL,
+  `module_path` varchar(512) NOT NULL,
+  `module_size` bigint(20) unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`report_id`),
+  UNIQUE KEY `user_id_match_id_module_name` (`user_id`,`match_id`,`module_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

@@ -253,10 +253,25 @@ namespace Database
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine($"[ERROR] FlagAccountForReview_Module failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				// Once a minute with a count: when the table is missing this fails for every module of
+				// every player, thousands of identical lines a night.
+				int suppressed = Interlocked.Exchange(ref s_moduleFlagFailuresSinceLog, 0);
+				long now = Environment.TickCount64;
+				if (now - Interlocked.Read(ref s_lastModuleFlagFailureLogMs) >= 60000)
+				{
+					Interlocked.Exchange(ref s_lastModuleFlagFailureLogMs, now);
+					Console.WriteLine($"[ERROR] FlagAccountForReview_Module failed ({suppressed} more in the last minute): {ex.Message}");
+					SentrySdk.CaptureException(ex);
+				}
+				else
+				{
+					Interlocked.Add(ref s_moduleFlagFailuresSinceLog, suppressed + 1);
+				}
 			}
 		}
+
+		private static long s_lastModuleFlagFailureLogMs = 0;
+		private static int s_moduleFlagFailuresSinceLog = 0;
 
 
 

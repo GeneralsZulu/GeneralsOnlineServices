@@ -83,6 +83,11 @@ namespace GenOnlineService
 
 		public DateTime TimeCreated { get; private set; } = DateTime.UtcNow;
 
+		// When the lobby went INGAME; null until it does. DetermineLobbyWinnerIfNotPresent uses it to
+		// refuse to name a winner for a match that died seconds after starting.
+		[JsonIgnore]
+		public DateTime? TimeStarted { get; private set; } = null;
+
 		[JsonIgnore]
 		public bool PendingFullMeshConnectivityChecks { get; private set; } = false;
 
@@ -872,7 +877,7 @@ public async Task FinalizeACChecks()
 						Members[oldSlot] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, oldSlot, true);
 
 						member.SetReadyState(true);
-						ClearResumeArm(); // the resume replay was the old host's; the new host arms its own if it wants to
+						ClearResumeArm("host changed"); // the resume replay was the old host's; the new host arms its own if it wants to
 						DirtyRetransmitLobbyList();
 						break;
 					}
@@ -1424,7 +1429,7 @@ public async Task FinalizeACChecks()
 
 			if (bMapChanged)
 			{
-				ClearResumeArm(); // the recording fixes the map
+				ClearResumeArm("map changed"); // the recording fixes the map
 			}
 			DirtyRetransmitLobbyList();
 		}
@@ -1438,13 +1443,17 @@ public async Task FinalizeACChecks()
 
 			if (bChanged)
 			{
-				ClearResumeArm(); // the recording fixes the starting cash
+				ClearResumeArm("starting cash changed"); // the recording fixes the starting cash
 			}
 			DirtyRetransmitLobbyList();
 		}
 
 		public void UpdateEnforceRandom(bool bEnforceRandom)
 		{
+			// TheSuperHackers @bugfix bill-rich 16/10/2026 Only a real change disarms: the host's UI re-sends
+			// this with every settings echo, and an unconditional disarm here was one of the two things
+			// that undid an arm the moment it was made.
+			bool bChanged = IsEnforceRandom != bEnforceRandom;
 			IsEnforceRandom = bEnforceRandom;
 
 			if (bEnforceRandom)
@@ -1457,7 +1466,10 @@ public async Task FinalizeACChecks()
 				}
 			}
 
-			ClearResumeArm(); // the recording fixes the factions and the teams
+			if (bChanged)
+			{
+				ClearResumeArm("enforce random changed"); // the recording fixes the factions and the teams
+			}
 			DirtyRetransmitLobbyList();
 		}
 
@@ -1470,7 +1482,7 @@ public async Task FinalizeACChecks()
 
 			if (bChanged)
 			{
-				ClearResumeArm(); // the recording fixes the superweapon limit
+				ClearResumeArm("superweapon limit changed"); // the recording fixes the superweapon limit
 			}
 			DirtyRetransmitLobbyList();
 		}
@@ -1531,6 +1543,8 @@ public async Task FinalizeACChecks()
 			// if start, init our AC probe
 			if (state == ELobbyState.INGAME)
 			{
+				TimeStarted = DateTime.UtcNow;
+
 				// every client fetched its resume replay before pressing start; the bytes are dead weight from here
 				ReleaseResumeReplay();
 
@@ -1678,29 +1692,63 @@ public async Task FinalizeACChecks()
 			{
 				g_SlotLock.Release();
 			}
+			Console.WriteLine($"[Lobby {LobbyID}] Resume: ALIGN_SLOTS applied: {DescribeRoster()}");
 			DirtyRetransmitLobbyList();
 			return null;
+		}
+
+		/// <summary>
+		/// One line per slot: index, kind, user, side, color, start position, team. Logged when the
+		/// roster is aligned to a recording and compared before and after a slot update to tell a real
+		/// change from an echo.
+		/// </summary>
+		public string RosterFingerprint()
+		{
+			return DescribeRoster();
+		}
+
+		private string DescribeRoster()
+		{
+			System.Text.StringBuilder sb = new System.Text.StringBuilder();
+			foreach (LobbyMember member in Members)
+			{
+				if (sb.Length > 0)
+				{
+					sb.Append(' ');
+				}
+				sb.Append(member.SlotIndex).Append(':').Append((int)member.SlotState);
+				if (member.SlotState == EPlayerType.SLOT_PLAYER)
+				{
+					sb.Append('/').Append(member.UserID);
+				}
+				sb.Append('/').Append(member.Side).Append('/').Append(member.Color).Append('/').Append(member.StartingPosition).Append('/').Append(member.Team);
+			}
+			return sb.ToString();
 		}
 
 		public bool UpdateResumeArm(UInt32 handoffFrame, int rngSeed)
 		{
 			if (handoffFrame == 0)
 			{
-				ClearResumeArm();
+				ClearResumeArm("host disarmed");
 				return true;
 			}
 
+			long sourceBytes;
 			lock (m_resumeReplayLock)
 			{
 				if (m_resumeReplayLength == 0 || m_resumeReplayLength != m_resumeReplayTotal)
 				{
+					Console.WriteLine($"[Lobby {LobbyID}] Resume: arm at frame {handoffFrame} refused: source {m_resumeReplayLength}/{m_resumeReplayTotal} bytes");
 					return false; // no source, or an unfinished upload
 				}
+				sourceBytes = m_resumeReplayTotal;
 			}
 
 			ResumeHandoffFrame = handoffFrame;
 			RNGSeed = rngSeed;
 			++ResumeReplayGeneration;
+			Console.WriteLine($"[Lobby {LobbyID}] Resume: armed at frame {handoffFrame} seed {rngSeed} generation {ResumeReplayGeneration} source {sourceBytes} bytes; roster {DescribeRoster()}");
 			foreach (LobbyMember member in Members)
 			{
 				member.UpdateHasResumeReplay(false, false);
@@ -1713,9 +1761,13 @@ public async Task FinalizeACChecks()
 		/// Disarms the resume and drops the source. Also called when the host changes a setting the
 		/// recording fixes (map, starting cash, superweapon limit): the arm cannot survive that.
 		/// </summary>
-		public void ClearResumeArm()
+		public void ClearResumeArm(string reason = "disarmed")
 		{
 			bool bWasArmed = ResumeHandoffFrame != 0;
+			if (bWasArmed)
+			{
+				Console.WriteLine($"[Lobby {LobbyID}] Resume: disarmed (was frame {ResumeHandoffFrame}): {reason}");
+			}
 			ResumeHandoffFrame = 0;
 			ReleaseResumeReplay();
 			foreach (LobbyMember member in Members)
@@ -1778,7 +1830,7 @@ public async Task FinalizeACChecks()
 				if (offset == 0)
 				{
 					// a new source invalidates any arm: disarm properly (flags cleared, members told) and free the old file
-					ClearResumeArm();
+					ClearResumeArm("new source uploaded");
 					if (Interlocked.Read(ref s_resumeReplayBytesInUse) + total > ResumeReplayTotalCapBytes)
 					{
 						bOverCapacity = true;
@@ -1789,6 +1841,7 @@ public async Task FinalizeACChecks()
 					m_resumeReplayBytes = new byte[total];
 					m_resumeReplayLength = 0;
 					m_resumeReplayTotal = total;
+					Console.WriteLine($"[Lobby {LobbyID}] Resume: source upload started, {total} bytes");
 				}
 				if (offset != m_resumeReplayLength || total != m_resumeReplayTotal || offset + bytes.Length > m_resumeReplayTotal)
 				{
@@ -1798,6 +1851,10 @@ public async Task FinalizeACChecks()
 				Buffer.BlockCopy(bytes, 0, m_resumeReplayBytes, (int)offset, bytes.Length);
 				m_resumeReplayLength += bytes.Length;
 				currentLength = m_resumeReplayLength;
+				if (m_resumeReplayLength == m_resumeReplayTotal)
+				{
+					Console.WriteLine($"[Lobby {LobbyID}] Resume: source upload complete, {m_resumeReplayTotal} bytes");
+				}
 				return true;
 			}
 		}

@@ -527,21 +527,28 @@ namespace Database
 
 		public static async Task<EloData> GetELOData(AppDbContext db, long userId)
 		{
-			try
+			if (ExternalLeaderboardsClient.IsGetConfigured)
 			{
-				// Try fetching from the external API
-				var apiElo = await ExternalLeaderboardsClient.GetEloFromApi(userId);
-				if (apiElo != null)
+				try
 				{
-					// Persist retrieved rating to DB asynchronously for fallback
-					await SaveELOData(db, userId, apiElo);
-					return apiElo;
+					// Try fetching from the external API
+					var apiElo = await ExternalLeaderboardsClient.GetEloFromApi(userId);
+					if (apiElo != null)
+					{
+						// Persist retrieved rating to DB asynchronously for fallback
+						await SaveELOData(db, userId, apiElo);
+						return apiElo;
+					}
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"[ERROR] GetELOData API call failed: {ex.Message}");
+					SentrySdk.CaptureException(ex);
 				}
 			}
-			catch (Exception ex)
+			else
 			{
-				Console.WriteLine($"[ERROR] GetELOData API call failed: {ex.Message}");
-				SentrySdk.CaptureException(ex);
+				ExternalLeaderboardsClient.LogNotConfiguredOnce("the Elo lookup");
 			}
 
 			try
