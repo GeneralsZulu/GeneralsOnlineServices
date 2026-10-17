@@ -784,6 +784,14 @@ namespace GenOnlineService
 			return m_dictUserSessions;
 		}
 
+		public static void ForEachSharedUserData(Action<SharedUserData> action)
+		{
+			foreach (var kvPair in m_dictSharedUserData)
+			{
+				action(kvPair.Value);
+			}
+		}
+
 		public static SharedUserData? GetSharedDataForUser(string strDisplayName)
 		{
 			foreach (var kvPair in m_dictSharedUserData)

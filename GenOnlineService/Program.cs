@@ -1146,6 +1146,7 @@ namespace GenOnlineService
 			}
 
 			builder.Services.AddHostedService<ExternalLeaderboardPublicationWorker>();
+			builder.Services.AddHostedService<RadarvanStatsWorker>();
 			builder.Services.AddSingleton<LobbyManager>();
 			builder.Services.AddSingleton<LivestreamManager>();
 

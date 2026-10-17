@@ -52,7 +52,21 @@ namespace GenOnlineService.Controllers
 		{
 			RouteHandler_GET_GlobalStats_Result result = new RouteHandler_GET_GlobalStats_Result();
 
-			result.globalstats = DailyStatsManager.g_StatsContainer.Stats;
+			// The welcome screen shows per-side win percentages. With radarvan configured
+			// these are community-wide totals; otherwise this service's own daily tally.
+			RadarvanSnapshot snapshot = RadarvanStats.Snapshot;
+			if (snapshot.GlobalMatches != null && snapshot.GlobalWins != null)
+			{
+				result.globalstats = new DailyStatsStructure
+				{
+					matches = (int[])snapshot.GlobalMatches.Clone(),
+					wins = (int[])snapshot.GlobalWins.Clone()
+				};
+			}
+			else
+			{
+				result.globalstats = DailyStatsManager.g_StatsContainer.Stats;
+			}
 
 			return result;
 		}

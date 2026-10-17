@@ -82,6 +82,30 @@ namespace Database
 	AppDbContext db,
 	long userId)
 		{
+			PlayerStats ps = await GetPlayerStatsFromGO(db, userId);
+
+			// radarvan's per-general record replaces this service's own counters when it
+			// knows the player (by display name). Unknown players keep what GO tracked.
+			if (RadarvanStats.IsConfigured)
+			{
+				try
+				{
+					string displayName = await Database.Users.GetDisplayName(db, userId);
+					RadarvanStats.Apply(ps, displayName);
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"[WARNING] GetPlayerStats: radarvan apply failed for {userId}: {ex.Message}");
+				}
+			}
+
+			return ps;
+		}
+
+		private static async Task<PlayerStats> GetPlayerStatsFromGO(
+	AppDbContext db,
+	long userId)
+		{
 			EloData elo;
 			try
 			{
