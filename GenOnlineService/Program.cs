@@ -1164,10 +1164,15 @@ namespace GenOnlineService
 			AppDomain.CurrentDomain.UnhandledException += GlobalExceptionHandler;
 #endif
 
-			// Configure thread pool for better performance under load
-			ThreadPool.SetMinThreads(200, 200);
-
 			var builder = WebApplication.CreateBuilder(args);
+
+			// Configure thread pool for better performance under load. Core:threadpool_min_threads lets
+			// small / shared-core hosts lower this; 0 leaves the .NET default in place.
+			int threadPoolMinThreads = builder.Configuration.GetSection("Core").GetValue<int?>("threadpool_min_threads") ?? 200;
+			if (threadPoolMinThreads > 0)
+			{
+				ThreadPool.SetMinThreads(threadPoolMinThreads, threadPoolMinThreads);
+			}
 			RoomCatalog.Initialize(Path.Combine(builder.Environment.ContentRootPath, "data", "rooms.json"));
 
 			// Add services to the container.
@@ -1644,9 +1649,17 @@ namespace GenOnlineService
 			};
 			timerCleanup.Start();
 
+			// Core:lobby_tick_interval_ms drives both 5ms lobby timers below; raise it on shared-core hosts
+			int lobbyTickIntervalMS = builder.Configuration.GetSection("Core").GetValue<int?>("lobby_tick_interval_ms") ?? 5;
+			if (lobbyTickIntervalMS <= 0)
+			{
+				Console.WriteLine("FATAL ERROR: lobby_tick_interval_ms must be greater than 0");
+				return;
+			}
+
 			// tick lobby
 			{
-				System.Timers.Timer timerTick = new System.Timers.Timer(5); // 5ms tick
+				System.Timers.Timer timerTick = new System.Timers.Timer(lobbyTickIntervalMS); // 5ms tick by default
 				timerTick.AutoReset = false;
 				timerTick.Elapsed += async (sender, e) =>
 				{
@@ -1671,7 +1684,7 @@ namespace GenOnlineService
             // tick lobby cleanup - this is a separate timer to prevent main lobby tick from being blocked by cleanup
             // @hotfix SkyAero 15/08/2026
 			{
-                System.Timers.Timer timerTick = new System.Timers.Timer(5); // 5ms tick
+                System.Timers.Timer timerTick = new System.Timers.Timer(lobbyTickIntervalMS); // 5ms tick by default
                 timerTick.AutoReset = false;
                 timerTick.Elapsed += async (sender, e) =>
                 {

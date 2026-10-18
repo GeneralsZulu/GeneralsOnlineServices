@@ -7,6 +7,52 @@
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
+-- Dumping structure for table go_production.ac_reviews_crc
+CREATE TABLE IF NOT EXISTS `ac_reviews_crc` (
+  `user_id` bigint(20) NOT NULL,
+  `original_crc` varchar(64) NOT NULL,
+  `diff_crc` varchar(64) NOT NULL,
+  `most_recent_match` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`user_id`,`original_crc`,`diff_crc`,`most_recent_match`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
+-- Dumping structure for table go_production.ac_reviews_modules
+CREATE TABLE IF NOT EXISTS `ac_reviews_modules` (
+  `report_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `match_id` bigint(20) unsigned NOT NULL,
+  `module_name` varchar(128) NOT NULL,
+  `module_path` varchar(512) NOT NULL,
+  `module_size` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`report_id`),
+  UNIQUE KEY `user_id_match_id_module_name` (`user_id`,`match_id`,`module_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
+-- Dumping structure for table go_production.ac_reviews_new_account_games
+CREATE TABLE IF NOT EXISTS `ac_reviews_new_account_games` (
+  `report_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `match_id` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`report_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
+-- Dumping structure for table go_production.ac_reviews_probes
+CREATE TABLE IF NOT EXISTS `ac_reviews_probes` (
+  `report_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL,
+  `match_id` bigint(20) unsigned NOT NULL,
+  `reason` varchar(256) NOT NULL,
+  PRIMARY KEY (`report_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Data exporting was unselected.
+
 -- Dumping structure for table go_production.connection_outcomes
 CREATE TABLE IF NOT EXISTS `connection_outcomes` (
   `day_of_year` int(11) NOT NULL DEFAULT 0,

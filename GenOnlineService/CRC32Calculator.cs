@@ -17,6 +17,7 @@
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 
@@ -24,16 +25,32 @@ namespace GenOnlineService
 {
 	public static class CRC32Calculator
 	{
+		// Version checks hash the same exes on every request, so cache per path and recompute only
+		// when the file's size or last write time changes (e.g. a new exe is dropped into crcfiles).
+		private static readonly ConcurrentDictionary<string, (long length, DateTime lastWriteUtc, uint crc)> s_dictCache = new();
+
 		public static uint CalculateCRC32(string filePath)
 		{
-			if (!File.Exists(filePath))
+			FileInfo fileInfo = new FileInfo(filePath);
+			if (!fileInfo.Exists)
 				throw new FileNotFoundException($"File not found: {filePath}");
 
+			if (s_dictCache.TryGetValue(filePath, out var cached)
+				&& cached.length == fileInfo.Length
+				&& cached.lastWriteUtc == fileInfo.LastWriteTimeUtc)
+			{
+				return cached.crc;
+			}
+
+			uint crc;
 			using (var stream = File.OpenRead(filePath))
 			{
 				var crc32 = new Crc32();
-				return crc32.ComputeHashFromStream(stream);
+				crc = crc32.ComputeHashFromStream(stream);
 			}
+
+			s_dictCache[filePath] = (fileInfo.Length, fileInfo.LastWriteTimeUtc, crc);
+			return crc;
 		}
 	}
 
