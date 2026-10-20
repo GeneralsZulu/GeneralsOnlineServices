@@ -370,10 +370,17 @@ namespace GenOnlineService.Controllers
 								// register with daily stats
 								// NOTE: only once per match - the outcome endpoint can be called repeatedly for the
 								// same match_id, and these counters are unconditional increments
+								// A desynced match has no result: the clients stop the simulation the
+								// moment the CRCs disagree and every player reports won=false, so
+								// counting it would book one loss per player against the army totals.
 								bool bFirstOutcomeReportForMatch = sourceData.TryMarkMatchOutcomeReported(match_id);
-								if (bFirstOutcomeReportForMatch)
+								if (bFirstOutcomeReportForMatch && !desynced)
 								{
 									DailyStatsManager.RegisterOutcome(army, won);
+								}
+								else if (bFirstOutcomeReportForMatch)
+								{
+									Console.WriteLine($"[Outcome] match {match_id} user {user_id}: desynced, not counted in daily stats");
 								}
 
 								// give them back signed URLs they need
