@@ -862,6 +862,9 @@ static class MatchmakingManager
 		private const int c_GameStartCountdownMSec = 5000;
 		private const int c_SetupClientTimeoutMarginMSec = 2000;
 
+		// older clients treat any timeout_ms below this as the start countdown
+		private const int c_LegacyClientCountdownThresholdMSec = 10000;
+
 		private async Task StartGameAfterSuccessfulMeshCheck(Lobby lobby)
 		{
 			Console.WriteLine("START GAME");
@@ -875,6 +878,7 @@ static class MatchmakingManager
 				UserSession? memberSession = member.GetAssociatedSession();
 				if (memberSession != null)
 				{
+					memberSession.IsRegisteredForMatchmaking = false;
 					memberSession.QueueWebsocketSend(bytesJSON);
 				}
 			}
@@ -883,11 +887,12 @@ static class MatchmakingManager
 			MatchmakingManager.DestroyBucket(this);
 		}
 
-		private void QueueSetupProgress(int timeoutMSec)
+		private void QueueSetupProgress(int timeoutMSec, int countdownMSec = 0)
 		{
 			WebSocketMessage_MatchmakerSetupProgress setupProgress = new WebSocketMessage_MatchmakerSetupProgress();
 			setupProgress.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_SETUP_PROGRESS;
 			setupProgress.timeout_ms = timeoutMSec;
+			setupProgress.countdown_ms = countdownMSec;
 			byte[] setupProgressJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setupProgress));
 
 			foreach (MatchmakingBucketMember member in m_lstMembers)
@@ -902,7 +907,7 @@ static class MatchmakingManager
 
 		private async Task TriggerFullMeshConnectivityChecks(Lobby lobby)
 		{
-			lobby.StartFullMeshConnectivityCheck();
+			await lobby.StartFullMeshConnectivityCheck();
 			lock (m_StateLock)
 			{
 				// Publish the state transition before any notification work. If a send fails, the
@@ -910,7 +915,8 @@ static class MatchmakingManager
 				m_bWaitingOnMeshConnectivityChecks = true;
 			}
 
-			QueueSetupProgress(Lobby.MaxFullMeshConnectivityCheckDurationMS + c_SetupClientTimeoutMarginMSec);
+			// kept at or above the legacy threshold so short tuned checks don't show a start countdown on older clients
+			QueueSetupProgress(Math.Max(FullMeshCheckSettings.MaxDurationMS + c_SetupClientTimeoutMarginMSec, c_LegacyClientCountdownThresholdMSec));
 
 			lobby.SendFullMeshConnectivityCheckRequestToMembers();
 
@@ -1077,7 +1083,7 @@ static class MatchmakingManager
 
 						if (bStartCountdown)
 						{
-							QueueSetupProgress(c_GameStartCountdownMSec + c_SetupClientTimeoutMarginMSec);
+							QueueSetupProgress(c_GameStartCountdownMSec + c_SetupClientTimeoutMarginMSec, c_GameStartCountdownMSec);
 							foreach (MatchmakingBucketMember member in m_lstMembers)
 							{
 								UserSession? memberSession = member.GetAssociatedSession();
@@ -1260,6 +1266,19 @@ static class MatchmakingManager
 										true, playlist.DesiredPlayers, "", 12345, false, true, 10000, false, String.Empty, -5, false, Constants.g_DefaultCameraMaxHeight, dummyHostUser.ExeCRC, dummyHostUser.IniCRC, ELobbyType.QuickMatch,
 										dummyHostUser.AnticheatID);
 
+								Lobby? quickMatchLobby = lobbyManager.GetLobby(m_LobbyID);
+								if (quickMatchLobby != null)
+								{
+									foreach (MatchmakingBucketMember member in m_lstMembers)
+									{
+										UserSession? memberSession = member.GetAssociatedSession();
+										if (memberSession != null)
+										{
+											quickMatchLobby.MatchedUserIDs.Add(memberSession.m_UserID);
+										}
+									}
+								}
+
 								// tell both to join our lobby
 								WebSocketMessage_MatchmakerJoinLobby joinAction = new WebSocketMessage_MatchmakerJoinLobby();
 								joinAction.msg_id = (int)EWebSocketMessageID.MATCHMAKING_ACTION_JOIN_PREARRANGED_LOBBY;
@@ -1327,6 +1346,7 @@ static class MatchmakingManager
 								UserSession? memberSession = member.GetAssociatedSession();
 								if (memberSession != null)
 								{
+									memberSession.IsRegisteredForMatchmaking = false;
 									await SendMatchmakingMessage(memberSession, "The QuickMatch lobby could not be created. Please try matchmaking again.");
 								}
 							}
@@ -1351,6 +1371,7 @@ static class MatchmakingManager
 									if (memberSession != null)
 									{
 										Console.WriteLine("User {0} failed to join QuickMatch lobby {1} in time, dropping from bucket", memberSession.m_UserID, m_LobbyID);
+										memberSession.IsRegisteredForMatchmaking = false;
 										await SendMatchmakingMessage(memberSession, "You failed to join the QuickMatch lobby in time and have been removed from matchmaking.");
 									}
 
@@ -1366,6 +1387,7 @@ static class MatchmakingManager
 									UserSession? memberSession = member.GetAssociatedSession();
 									if (memberSession != null)
 									{
+										memberSession.IsRegisteredForMatchmaking = false;
 										await SendMatchmakingMessage(memberSession, "Not enough players joined the QuickMatch lobby. Please try matchmaking again.");
 									}
 								}
@@ -1647,6 +1669,7 @@ static class MatchmakingManager
 
 					if (thisSessionUserData == null)
 					{
+						thisSession.IsRegisteredForMatchmaking = false;
 						lstDestroy.Add(wrSession);
 					}
 					else
@@ -1749,6 +1772,7 @@ static class MatchmakingManager
 						else
 						{
 							// invalid playlist somehow
+							thisSession.IsRegisteredForMatchmaking = false;
 							lstDestroy.Add(wrSession);
 						}
 					}

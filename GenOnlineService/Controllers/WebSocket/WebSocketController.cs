@@ -43,6 +43,9 @@ namespace GenOnlineService.Controllers
 			_dbFactory = dbFactory;
 		}
 
+		// longer chat is dropped rather than relayed
+		private const int MaxChatMessageLength = 512;
+
 		private static readonly JsonSerializerOptions JsonOpts = new()
 		{
 			PropertyNameCaseInsensitive = true,
@@ -186,8 +189,8 @@ namespace GenOnlineService.Controllers
 			string ipAddress = IPHelpers.NormalizeIP(HttpContext.Connection.RemoteIpAddress?.ToString());
 			string ipContinent = "NA";
 			string ipCountry = "US";
-			double dLongitude = 38.8977; // the whitehouse;
-			double dLatitude = 77.0365f; // the whitehouse;
+			double dLongitude = -77.0365; // the whitehouse
+			double dLatitude = 38.8977; // the whitehouse
 
 			try
 			{
@@ -257,7 +260,19 @@ namespace GenOnlineService.Controllers
 			}
 
 			// accept WS
-			using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			WebSocket acceptedSocket;
+			try
+			{
+				acceptedSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+			}
+			catch
+			{
+				// handshake failed: release the session registered for this socket, or it stays online with no connection
+				await WebSocketManager.DeleteSession(user_id, wsSess.m_SessionType, wsSess, false);
+				throw;
+			}
+
+			using var webSocket = acceptedSocket;
 
 			// attach
 			wsSess.AttachWebsocket(webSocket);
@@ -281,15 +296,18 @@ namespace GenOnlineService.Controllers
 
 				try
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // timeout
+					// cancelling a pending receive aborts the socket
 					receiveResult = await webSocket.ReceiveAsync(
-						new ArraySegment<byte>(buffer), cts.Token);
+						new ArraySegment<byte>(buffer), HttpContext.RequestAborted);
 				}
 				catch (OperationCanceledException)
 				{
-					// No message received in 30s � send a keep-alive pong and continue waiting
-					await wsSess.SendPong();
-					continue;
+					break;
+				}
+				catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+				{
+					// client dropped without a close handshake
+					break;
 				}
 				catch (Exception ex)
 				{
@@ -301,8 +319,7 @@ namespace GenOnlineService.Controllers
 
 				if (receiveResult.MessageType == WebSocketMessageType.Close)
 				{
-					using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-					await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", cts.Token);
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing");
 					break;
 				}
 
@@ -318,8 +335,7 @@ namespace GenOnlineService.Controllers
 						fragmentBuffer.Dispose();
 						fragmentBuffer = null;
 
-						using var ctsTooBig = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-						await webSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ctsTooBig.Token);
+						await wsSess.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large");
 						break;
 					}
 
@@ -345,7 +361,7 @@ namespace GenOnlineService.Controllers
 				// if we lost session data, close WS
 				if (sourceUserData == null)
 				{
-					wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
+					await wsSess.CloseAsync(WebSocketCloseStatus.NormalClosure, "User signed in from another point of presence [B]");
 					break;
 				}
 
@@ -377,8 +393,7 @@ namespace GenOnlineService.Controllers
 					}
 				}
 
-				using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)); // timeout
-				await webSocket.CloseAsync(closeStatus, closeStatusDescription, cts.Token);
+				await wsSess.CloseAsync(closeStatus, closeStatusDescription);
 			}
 		}
 
@@ -493,7 +508,7 @@ namespace GenOnlineService.Controllers
 			{
 				if (msgID == EWebSocketMessageID.PING)
 				{
-					await sourceWS.SendPong();
+					sourceWS.QueuePong();
 				}
 				else if (msgID == EWebSocketMessageID.SOCIAL_SUBSCRIBE_REALTIME_UPDATES)
 				{
@@ -512,7 +527,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_Social_FriendChatMessage_Inbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_Social_FriendChatMessage_Inbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						if (!sourceUserData.TryConsumeChatMessage())
 						{
@@ -564,7 +579,7 @@ namespace GenOnlineService.Controllers
 							// send to source
 							byte[] bytesJSON = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(outboundMsg));
 
-							await sourceWS.SendAsync(bytesJSON, WebSocketMessageType.Text);
+							sourceUserSession.QueueWebsocketSend(bytesJSON);
 						}
 					}
 				}
@@ -579,7 +594,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_NetworkRoomChatMessageInbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_NetworkRoomChatMessageInbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						if (!sourceUserData.TryConsumeChatMessage())
 						{
@@ -663,12 +678,19 @@ namespace GenOnlineService.Controllers
 						Lobby? lobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
 						if (lobby != null)
 						{
-							LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
-
-							if (member != null)
+							// Ready state is part of the lobby's mutable state, so it goes through the
+							// same per-lobby gate as slot/member mutations.
+							await lobby.RunExclusiveAsync(() =>
 							{
-								member.SetReadyState(bReady);
-							}
+								LobbyMember? member = lobby.GetMemberFromUserID(sourceUserSession.m_UserID);
+
+								if (member != null)
+								{
+									member.SetReadyState(bReady);
+								}
+
+								return Task.CompletedTask;
+							});
 						}
 					}
 				}
@@ -858,7 +880,7 @@ namespace GenOnlineService.Controllers
 					WebSocketMessage_LobbyChatMessageInbound? chatMessage =
 						JsonSerializer.Deserialize<WebSocketMessage_LobbyChatMessageInbound>(payload, JsonOpts);
 
-					if (chatMessage != null)
+					if (chatMessage != null && (chatMessage.message?.Length ?? 0) <= MaxChatMessageLength)
 					{
 						// get lobby
 						Lobby? playerLobby = _lobbyManager.GetLobby(sourceUserSession.currentLobbyID);
@@ -944,7 +966,7 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots
-					lobbyInfo.CloseOpenSlots();
+					await lobbyInfo.CloseOpenSlots();
 				}
 				else if (msgID == EWebSocketMessageID.START_GAME)
 				{
@@ -961,7 +983,8 @@ namespace GenOnlineService.Controllers
 						}
 					}
 
-					if (lobbyInfo == null)
+					// only a lobby still in setup can start
+					if (lobbyInfo == null || lobbyInfo.State != ELobbyState.GAME_SETUP)
 					{
 						return;
 					}
@@ -1017,10 +1040,12 @@ namespace GenOnlineService.Controllers
 					}
 
 					// lock slots (more people joining when we're already doing connectivity checks won't help the situation)
-					lobbyInfo.CloseOpenSlots();
+					// Awaited separately from StartFullMeshConnectivityCheck below: each is its own
+					// gated operation on the lobby, so neither ever nests inside the other's gate use.
+					await lobbyInfo.CloseOpenSlots();
 
 					// mark lobby as in progress of full mesh connectivity checks
-					lobbyInfo.StartFullMeshConnectivityCheck();
+					await lobbyInfo.StartFullMeshConnectivityCheck();
 
 					// start full mesh connectivity checks
 					lobbyInfo.SendFullMeshConnectivityCheckRequestToMembers();
@@ -1186,7 +1211,7 @@ namespace GenOnlineService.Controllers
 					if (data != null && data.ContainsKey("timestamp"))
 					{
 						string strExeCRC = data["timestamp"].GetString();
-						sourceUserSession.RegisterExeCRC(strExeCRC);
+						await sourceUserSession.RegisterExeCRC(strExeCRC);
 
 						if (lobbyInfo != null)
 						{

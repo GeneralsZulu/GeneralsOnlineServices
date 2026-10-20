@@ -268,7 +268,7 @@ namespace GenOnlineService.Controllers
 						}
 
 						Console.WriteLine("[Source 1] User {0} Leave Any Lobby", user_id);
-						_lobbyManager.LeaveAnyLobby(user_id);
+						await _lobbyManager.LeaveAnyLobby(user_id);
 
 						// cleanup TURN credentials
 						TURNCredentialManager.DeleteCredentialsForUser(user_id);
@@ -438,6 +438,9 @@ namespace GenOnlineService.Controllers
 		private const int ResumeReplayMaxChunkRequestBytes = ResumeReplayMaxChunkBytes * 4 / 3 + 4096; // base64 plus JSON framing
 		private static readonly Regex ResumeReplayFileNamePattern = new Regex("^[0-9]{8}\\.rep$", RegexOptions.Compiled);
 
+		// Why ApplyLobbyFieldUpdateAsync refused a host action, for the lobby chat (a controller lives for one request).
+		private string m_strFieldUpdateError = String.Empty;
+
 
 		[HttpPost("{lobbyID}")]
 		[Authorize(Roles = "GameClient")]
@@ -481,8 +484,11 @@ namespace GenOnlineService.Controllers
 									return result;
 								}
 
-								// TODO: Safety
-								ELobbyUpdateField field = (ELobbyUpdateField)data["field"].GetInt32();
+								if (!TryParseLobbyUpdateField(data["field"].GetInt32(), out ELobbyUpdateField field))
+								{
+									Response.StatusCode = (int)HttpStatusCode.BadRequest;
+									return result;
+								}
 
 								// check permissions
 								ELobbyUpdatePermissions updatePerms = g_dictLobbyUpdatePermissionsTable[field];
@@ -497,456 +503,21 @@ namespace GenOnlineService.Controllers
 									}
 								}
 
-								// reset everyones ready states when anything changes (minus dummy actions)
-								if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
-									&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP
-									&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY
-									&& field != ELobbyUpdateField.HOST_ACTION_KICK_USER)
+								// Every mutation below touches this lobby's Members, slot state, or ready state,
+								// so the whole field-update dispatch runs as one atomic operation under the
+								// per-lobby gate instead of each setter mutating state unguarded.
+								// A kick can't finish the actual removal in here: RemoveMember acquires this
+								// same lobby's gate, which is not reentrant, so ApplyLobbyFieldUpdateAsync only
+								// validates the target and hands the user ID back for PerformKickAsync to
+								// process once the gate below has been released.
+								m_strFieldUpdateError = String.Empty;
+								Int64? kickedUserID = await lobby.RunExclusiveAsync(() => ApplyLobbyFieldUpdateAsync(lobby, SourceMember, field, data));
+								result.error = m_strFieldUpdateError;
+								result.success = m_strFieldUpdateError.Length == 0 && Response.StatusCode == (int)HttpStatusCode.OK;
+
+								if (kickedUserID.HasValue)
 								{
-									lobby.ResetReadyStates();
-								}
-
-								// Resume-from-replay: the recording fixes every slot's occupant, faction, color, start
-								// position and team (the map, cash and superweapon handlers disarm inside the lobby), so
-								// a slot change disarms. The host re-arms after fixing the lobby.
-								//
-								// TheSuperHackers @bugfix bill-rich 16/10/2026 Decided after the update, on whether the
-								// roster actually changed, not on the field name. The arming client's own UI echoes the
-								// slot it was just moved to (MY_SIDE / MY_COLOR / MY_START_POS with the values the
-								// alignment set), and HOST_ACTION_ALIGN_SLOTS is the first half of arming itself; both
-								// used to disarm the arm that had just been made, so the host had to arm twice
-								// (2026-10-14: "Resume disarmed: the next start is a fresh game" right after every arm).
-								bool bSlotField = field == ELobbyUpdateField.MY_SIDE
-									|| field == ELobbyUpdateField.MY_COLOR
-									|| field == ELobbyUpdateField.MY_START_POS
-									|| field == ELobbyUpdateField.MY_TEAM
-									|| field == ELobbyUpdateField.AI_SIDE
-									|| field == ELobbyUpdateField.AI_COLOR
-									|| field == ELobbyUpdateField.AI_TEAM
-									|| field == ELobbyUpdateField.AI_START_POS
-									|| field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE
-									|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE;
-								string strRosterBefore = bSlotField ? lobby.RosterFingerprint() : String.Empty;
-
-								// While the host has enforce-random set, only Random (-1) is an
-								// acceptable faction or team. The client already locks its
-								// dropdowns, so this is for a client that does not, and for one
-								// that had a pick in flight when the host ticked the box. The
-								// host's Randomize roll arrives as a bulk slot update and is
-								// deliberately not covered: resolving the randoms is its job.
-								if (lobby.IsEnforceRandom)
-								{
-									if (field == ELobbyUpdateField.MY_SIDE || field == ELobbyUpdateField.AI_SIDE)
-									{
-										if (data.ContainsKey("side") && data["side"].GetInt32() >= 0)
-										{
-											result.success = true;
-											return result;
-										}
-									}
-									else if (field == ELobbyUpdateField.MY_TEAM || field == ELobbyUpdateField.AI_TEAM)
-									{
-										if (data.ContainsKey("team") && data["team"].GetInt32() >= 0)
-										{
-											result.success = true;
-											return result;
-										}
-									}
-								}
-
-								if (field == ELobbyUpdateField.LOBBY_MAP)
-								{
-									if (data.ContainsKey("map")
-										&& data.ContainsKey("map_path")
-										&& data.ContainsKey("max_players")
-										)
-									{
-										string? strMap = data["map"].GetString();
-										string? strMapPath = data["map_path"].GetString();
-										bool bOfficialMap = data["map_official"].GetBoolean();
-										int maxPlayers = data["max_players"].GetInt32();
-
-										// TheSuperHackers @feature bill-rich 02/10/2026 Optional: a member
-										// without this map fetches it from the cncstats store by CRC. Older
-										// clients do not send it, hence the ContainsKey guard and the 0.
-										UInt32 mapCRC = 0;
-										if (data.ContainsKey("map_crc"))
-										{
-											data["map_crc"].TryGetUInt32(out mapCRC);
-										}
-
-										if (strMap != null && strMapPath != null)
-										{
-											await using var db = await _dbFactory.CreateDbContextAsync();
-											await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers, mapCRC);
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.MY_SIDE)
-								{
-									if (data.ContainsKey("side")
-										&& data.ContainsKey("start_pos")
-										)
-									{
-										int side = data["side"].GetInt32();
-										int start_pos = data["start_pos"].GetInt32();
-
-										await using var db = await _dbFactory.CreateDbContextAsync();
-										await SourceMember.UpdateSide(db, side, start_pos);
-									}
-								}
-								else if (field == ELobbyUpdateField.MY_COLOR)
-								{
-									if (data.ContainsKey("color"))
-									{
-										int color = data["color"].GetInt32();
-
-										await using var db = await _dbFactory.CreateDbContextAsync();
-										await SourceMember.UpdateColor(db, color);
-									}
-								}
-								else if (field == ELobbyUpdateField.MY_START_POS)
-								{
-									if (data.ContainsKey("startpos"))
-									{
-										int startpos = data["startpos"].GetInt32();
-										SourceMember.UpdateStartPos(startpos);
-									}
-								}
-								else if (field == ELobbyUpdateField.MY_TEAM)
-								{
-									if (data.ContainsKey("team"))
-									{
-										int team = data["team"].GetInt32();
-										SourceMember.UpdateTeam(team);
-									}
-								}
-								else if (field == ELobbyUpdateField.LOBBY_STARTING_CASH)
-								{
-									if (data.ContainsKey("startingcash"))
-									{
-										UInt32 startingCash = data["startingcash"].GetUInt32();
-
-										await using var db = await _dbFactory.CreateDbContextAsync();
-										await lobby.UpdateStartingCash(db, startingCash);
-									}
-								}
-								else if (field == ELobbyUpdateField.LOBBY_ENFORCE_RANDOM)
-								{
-									if (data.ContainsKey("enforce_random"))
-									{
-										bool bEnforceRandom = data["enforce_random"].GetBoolean();
-
-										lobby.UpdateEnforceRandom(bEnforceRandom);
-									}
-								}
-								else if (field == ELobbyUpdateField.LOBBY_LIMIT_SUPERWEAPONS)
-								{
-									if (data.ContainsKey("limit_superweapons"))
-									{
-										bool bLimitSuperweapons = data["limit_superweapons"].GetBoolean();
-
-										await using var db = await _dbFactory.CreateDbContextAsync();
-										await lobby.UpdateLimitSuperweapons(db, bLimitSuperweapons);
-									}
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_FORCE_START)
-								{
-									// dummy action... just force everyone ready
-									lobby.ForceReady();
-								}
-								else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP)
-								{
-									if (data.ContainsKey("has_map"))
-									{
-										bool bHasMap = data["has_map"].GetBoolean();
-
-										SourceMember.UpdateHasMap(bHasMap);
-									}
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_KICK_USER)
-								{
-									if (data.ContainsKey("userid"))
-									{
-										// TODO: we should communicate the kick to the user...
-										Int64 KickedUserID = data["userid"].GetInt64();
-
-										// the target must actually be in THIS lobby, otherwise a host could wipe the
-										// TURN credentials / lobby state of any arbitrary online player
-										if (lobby.GetMemberFromUserID(KickedUserID) != null)
-										{
-											_lobbyManager.LeaveSpecificLobby(KickedUserID, lobbyID);
-
-											// cleanup TURN credentials
-											TURNCredentialManager.DeleteCredentialsForUser(KickedUserID);
-
-											// clear our lobby ID
-											UserSession? sourceData = WebSocketManager.GetSessionFromUser(KickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
-
-											if (sourceData != null)
-											{
-												sourceData.UpdateSessionLobbyID(-1);
-												// NOTE: We dont update the match history match ID here, that is done by the match history service
-											}
-
-											// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
-											await lobby.DirtyRetransmitToSingleMember(KickedUserID);
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE)
-								{
-									UInt16 slot_index = data["slot_index"].GetUInt16();
-									EPlayerType slot_state = (EPlayerType)data["slot_state"].GetUInt16();
-
-									LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
-									if (TargetMember != null)
-									{
-										TargetMember.SetPlayerSlotState(slot_state);
-									}
-								}
-								else if (field == ELobbyUpdateField.AI_SIDE)
-								{
-									if (data.ContainsKey("slot")
-										&& data.ContainsKey("side")
-										&& data.ContainsKey("start_pos")
-										)
-									{
-										int slot = data["slot"].GetInt32();
-										int side = data["side"].GetInt32();
-										int start_pos = data["start_pos"].GetInt32();
-
-										LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
-										if (TargetMember != null)
-										{
-											if (TargetMember.IsAI())
-											{
-												await using var db = await _dbFactory.CreateDbContextAsync();
-												await TargetMember.UpdateSide(db, side, start_pos);
-											}
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.AI_COLOR)
-								{
-									if (data.ContainsKey("slot")
-										&& data.ContainsKey("color"))
-									{
-										int slot = data["slot"].GetInt32();
-										int color = data["color"].GetInt32();
-
-										LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
-										if (TargetMember != null)
-										{
-											if (TargetMember.IsAI())
-											{
-												await using var db = await _dbFactory.CreateDbContextAsync();
-												await TargetMember.UpdateColor(db, color);
-											}
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.AI_TEAM)
-								{
-									if (data.ContainsKey("slot")
-										&& data.ContainsKey("team"))
-									{
-										int slot = data["slot"].GetInt32();
-										int team = data["team"].GetInt32();
-
-										LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
-										if (TargetMember != null)
-										{
-											if (TargetMember.IsAI())
-											{
-												TargetMember.UpdateTeam(team);
-											}
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.AI_START_POS)
-								{
-									if (data.ContainsKey("slot")
-										&& data.ContainsKey("start_pos"))
-									{
-
-										int slot = data["slot"].GetInt32();
-										int start_pos = data["start_pos"].GetInt32();
-
-										LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
-										if (TargetMember != null)
-										{
-											if (TargetMember.IsAI())
-											{
-												TargetMember.UpdateStartPos(start_pos);
-											}
-										}
-									}
-								}
-								else if (field == ELobbyUpdateField.MAX_CAMERA_HEIGHT)
-								{
-									if (data.ContainsKey("max_camera_height"))
-									{
-										UInt16 maxCameraHeight = data["max_camera_height"].GetUInt16();
-										lobby.UpdateMaxCameraHeight(maxCameraHeight);
-									}
-								}
-								else if (field == ELobbyUpdateField.JOINABILITY)
-								{
-									ELobbyJoinability newLobbyJoinability = (ELobbyJoinability)data["joinability"].GetInt32();
-									lobby.UpdateJoinability(newLobbyJoinability);
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE)
-								{
-									if (data.ContainsKey("slots"))
-									{
-										foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
-										{
-											try
-											{
-												if (!slotEntry.TryGetProperty("slot_index", out var slotIndexProp))
-												{
-													continue;
-												}
-												int slotIndex = slotIndexProp.GetInt32();
-
-												LobbyMember? TargetMember = lobby.GetMemberFromSlot(slotIndex);
-												if (TargetMember == null)
-												{
-													continue;
-												}
-
-												// A slot that changed hands since the host took its snapshot is left
-												// alone: the newcomer must not inherit the departed player's roll.
-												if (slotEntry.TryGetProperty("user_id", out var userIdProp) && userIdProp.GetInt64() != TargetMember.UserID)
-												{
-													continue;
-												}
-
-												// Only the fields present are applied, and none of them is persisted
-												// as the member's favorite: a roll is not a choice.
-												int? side = slotEntry.TryGetProperty("side", out var sideProp) ? sideProp.GetInt32() : null;
-												int? color = slotEntry.TryGetProperty("color", out var colorProp) ? colorProp.GetInt32() : null;
-												int? startPos = slotEntry.TryGetProperty("start_pos", out var startPosProp) ? startPosProp.GetInt32() : null;
-												int? team = slotEntry.TryGetProperty("team", out var teamProp) ? teamProp.GetInt32() : null;
-												TargetMember.ApplyRolledSlot(side, color, startPos, team);
-											}
-											catch
-											{
-												continue;
-											}
-										}
-										lobby.DirtyRetransmit();
-									}
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
-								{
-									// Resume-from-replay: the recording fixes who sat where, so the host sends the whole
-									// arrangement in one request and the lobby is rebuilt to match. Every current human
-									// must be placed exactly once and the owner must stay in slot 0; anything else is
-									// refused with a reason the host can show, and the lobby is left as it was.
-									if (!data.ContainsKey("slots") || data["slots"].ValueKind != JsonValueKind.Array)
-									{
-										Response.StatusCode = (int)HttpStatusCode.BadRequest;
-										result.success = false;
-										result.error = "no slots";
-										return result;
-									}
-									List<LobbySlotSpec> specs = new List<LobbySlotSpec>();
-									foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
-									{
-										LobbySlotSpec spec = new LobbySlotSpec();
-										if (!slotEntry.TryGetProperty("slot_index", out var idxProp) || !idxProp.TryGetInt32(out spec.SlotIndex)
-											|| !slotEntry.TryGetProperty("slot_state", out var stateProp) || !stateProp.TryGetInt32(out int stateInt))
-										{
-											Response.StatusCode = (int)HttpStatusCode.BadRequest;
-											result.success = false;
-											result.error = "malformed slot entry";
-											return result;
-										}
-										spec.SlotState = (EPlayerType)stateInt;
-										spec.UserID = slotEntry.TryGetProperty("user_id", out var uidProp) && uidProp.TryGetInt64(out Int64 uid) ? uid : -1;
-										spec.Side = slotEntry.TryGetProperty("side", out var sideProp) && sideProp.TryGetInt32(out int side) ? side : -1;
-										spec.Color = slotEntry.TryGetProperty("color", out var colorProp) && colorProp.TryGetInt32(out int color) ? color : -1;
-										spec.StartPos = slotEntry.TryGetProperty("start_pos", out var spProp) && spProp.TryGetInt32(out int sp) ? sp : -1;
-										spec.Team = slotEntry.TryGetProperty("team", out var teamProp) && teamProp.TryGetInt32(out int team) ? team : -1;
-										specs.Add(spec);
-									}
-									string? alignError = await lobby.AlignSlots(specs);
-									if (alignError != null)
-									{
-										Console.WriteLine($"[Lobby {lobby.LobbyID}] Resume: ALIGN_SLOTS from user {user_id} refused: {alignError}");
-										Response.StatusCode = (int)HttpStatusCode.Conflict;
-										result.success = false;
-										result.error = alignError;
-										return result;
-									}
-									result.success = true;
-								}
-								else if (field == ELobbyUpdateField.HOST_ACTION_ARM_RESUME)
-								{
-									// Resume-from-replay: the host arms the resume source it uploaded (POST {lobbyID}/resume_replay).
-									// The client replays it in lockstep up to handoff_frame on game start, so the lobby
-									// must start from the replay's seed. handoff_frame 0 disarms. Every refusal is an
-									// explicit error: a client that announced an arm the service dropped would have
-									// every guest start a fresh match.
-									if (data.ContainsKey("replay_file"))
-									{
-										// legacy field from clients that still name the file: only the recorder's own name is acceptable
-										string? replayFile = data["replay_file"].ValueKind == JsonValueKind.String ? data["replay_file"].GetString() : null;
-										if (replayFile == null || (replayFile.Length > 0 && !ResumeReplayFileNamePattern.IsMatch(replayFile)))
-										{
-											Response.StatusCode = (int)HttpStatusCode.BadRequest;
-											result.success = false;
-											return result;
-										}
-									}
-									if (!data.ContainsKey("handoff_frame")
-										|| data["handoff_frame"].ValueKind != JsonValueKind.Number
-										|| !data["handoff_frame"].TryGetUInt32(out UInt32 handoffFrame))
-									{
-										Response.StatusCode = (int)HttpStatusCode.BadRequest;
-										result.success = false;
-										return result;
-									}
-									int rngSeed = 0;
-									if (handoffFrame != 0
-										&& (!data.ContainsKey("rng_seed")
-											|| data["rng_seed"].ValueKind != JsonValueKind.Number
-											|| !data["rng_seed"].TryGetInt32(out rngSeed)))
-									{
-										Response.StatusCode = (int)HttpStatusCode.BadRequest;
-										result.success = false;
-										return result;
-									}
-									if (!lobby.UpdateResumeArm(handoffFrame, rngSeed))
-									{
-										// arming without an uploaded source
-										Response.StatusCode = (int)HttpStatusCode.Conflict;
-										result.success = false;
-										return result;
-									}
-									result.success = true;
-								}
-								else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY)
-								{
-									// whether this member holds a usable copy of the resume source (the way has_map works)
-									if (data.ContainsKey("has_resume_replay") && (data["has_resume_replay"].ValueKind == JsonValueKind.True || data["has_resume_replay"].ValueKind == JsonValueKind.False))
-									{
-										SourceMember.UpdateHasResumeReplay(data["has_resume_replay"].GetBoolean());
-										result.success = true;
-									}
-									else
-									{
-										Response.StatusCode = (int)HttpStatusCode.BadRequest;
-										result.success = false;
-										return result;
-									}
-								}
-
-								if (bSlotField && lobby.RosterFingerprint() != strRosterBefore)
-								{
-									lobby.ClearResumeArm($"slot change ({field}) by user {user_id}");
+									await PerformKickAsync(lobby, kickedUserID.Value);
 								}
                             }
                         }
@@ -961,6 +532,504 @@ namespace GenOnlineService.Controllers
 			}
 
 			return result;
+		}
+
+		// Rejects any wire value that isn't a real EPlayerType member, so a malformed or
+		// out-of-range slot_state from HOST_ACTION_SET_SLOT_STATE can't be cast into an enum value
+		// the rest of the lobby code (SetPlayerSlotState, IsAI, serialization, ...) never expects.
+		internal static bool TryParseSlotState(UInt16 rawValue, out EPlayerType slotState)
+		{
+			slotState = (EPlayerType)rawValue;
+			// hosts can open, close or fill a slot with AI, but never mark it as a human
+			return Enum.IsDefined(typeof(EPlayerType), slotState) && slotState != EPlayerType.SLOT_PLAYER;
+		}
+
+		// Rejects any wire value that isn't a real ELobbyUpdateField member, so an unknown/malformed
+		// field can't be cast into an enum value that then gets indexed straight into
+		// g_dictLobbyUpdatePermissionsTable (which previously threw KeyNotFoundException, silently
+		// swallowed by Post's outer catch, for anything out of range).
+		internal static bool TryParseLobbyUpdateField(int rawValue, out ELobbyUpdateField field)
+		{
+			field = (ELobbyUpdateField)rawValue;
+			return Enum.IsDefined(typeof(ELobbyUpdateField), field);
+		}
+
+		// Runs the per-field lobby update dispatch. Must only be called from inside
+		// lobby.RunExclusiveAsync: every branch here mutates this lobby's Members, slot
+		// state/fields, or ready state, and previously ran completely unguarded.
+		// Returns the kicked user's ID when HOST_ACTION_KICK_USER validated a real target, so the
+		// caller can run the actual removal after releasing the gate; null for every other field
+		// (including a kick request with no valid target).
+		private async Task<Int64?> ApplyLobbyFieldUpdateAsync(Lobby lobby, LobbyMember SourceMember, ELobbyUpdateField field, Dictionary<string, JsonElement> data)
+		{
+			// reset everyones ready states when anything changes (minus dummy actions)
+			if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
+				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP
+				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY
+				&& field != ELobbyUpdateField.HOST_ACTION_KICK_USER)
+			{
+				lobby.ResetReadyStates();
+			}
+
+			// Resume-from-replay: the recording fixes every slot's occupant, faction, color, start
+			// position and team (the map, cash and superweapon handlers disarm inside the lobby), so
+			// a slot change disarms. The host re-arms after fixing the lobby.
+			//
+			// TheSuperHackers @bugfix bill-rich 16/10/2026 Decided after the update, on whether the
+			// roster actually changed, not on the field name. The arming client's own UI echoes the
+			// slot it was just moved to (MY_SIDE / MY_COLOR / MY_START_POS with the values the
+			// alignment set), and HOST_ACTION_ALIGN_SLOTS is the first half of arming itself; both
+			// used to disarm the arm that had just been made, so the host had to arm twice
+			// (2026-10-14: "Resume disarmed: the next start is a fresh game" right after every arm).
+			bool bSlotField = field == ELobbyUpdateField.MY_SIDE
+				|| field == ELobbyUpdateField.MY_COLOR
+				|| field == ELobbyUpdateField.MY_START_POS
+				|| field == ELobbyUpdateField.MY_TEAM
+				|| field == ELobbyUpdateField.AI_SIDE
+				|| field == ELobbyUpdateField.AI_COLOR
+				|| field == ELobbyUpdateField.AI_TEAM
+				|| field == ELobbyUpdateField.AI_START_POS
+				|| field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE
+				|| field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE;
+			string strRosterBefore = bSlotField ? lobby.RosterFingerprint() : String.Empty;
+
+			// While the host has enforce-random set, only Random (-1) is an
+			// acceptable faction or team. The client already locks its
+			// dropdowns, so this is for a client that does not, and for one
+			// that had a pick in flight when the host ticked the box. The
+			// host's Randomize roll arrives as a bulk slot update and is
+			// deliberately not covered: resolving the randoms is its job.
+			if (lobby.IsEnforceRandom)
+			{
+				if (field == ELobbyUpdateField.MY_SIDE || field == ELobbyUpdateField.AI_SIDE)
+				{
+					if (data.ContainsKey("side") && data["side"].GetInt32() >= 0)
+					{
+						return null;
+					}
+				}
+				else if (field == ELobbyUpdateField.MY_TEAM || field == ELobbyUpdateField.AI_TEAM)
+				{
+					if (data.ContainsKey("team") && data["team"].GetInt32() >= 0)
+					{
+						return null;
+					}
+				}
+			}
+
+			if (field == ELobbyUpdateField.LOBBY_MAP)
+			{
+				if (data.ContainsKey("map")
+					&& data.ContainsKey("map_path")
+					&& data.ContainsKey("max_players")
+					)
+				{
+					string? strMap = data["map"].GetString();
+					string? strMapPath = data["map_path"].GetString();
+					bool bOfficialMap = data["map_official"].GetBoolean();
+					int maxPlayers = data["max_players"].GetInt32();
+
+					// same limits as lobby creation
+					if ((strMap != null && strMap.Length > 255) || (strMapPath != null && strMapPath.Length > 512))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						return null;
+					}
+
+					// TheSuperHackers @feature bill-rich 02/10/2026 Optional: a member
+					// without this map fetches it from the cncstats store by CRC. Older
+					// clients do not send it, hence the ContainsKey guard and the 0.
+					UInt32 mapCRC = 0;
+					if (data.ContainsKey("map_crc"))
+					{
+						data["map_crc"].TryGetUInt32(out mapCRC);
+					}
+
+					if (strMap != null && strMapPath != null)
+					{
+						await using var db = await _dbFactory.CreateDbContextAsync();
+						await lobby.UpdateMap(db, strMap, strMapPath, bOfficialMap, maxPlayers, mapCRC);
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.MY_SIDE)
+			{
+				if (data.ContainsKey("side")
+					&& data.ContainsKey("start_pos")
+					)
+				{
+					int side = data["side"].GetInt32();
+					int start_pos = data["start_pos"].GetInt32();
+
+					await using var db = await _dbFactory.CreateDbContextAsync();
+					await SourceMember.UpdateSide(db, side, start_pos);
+				}
+			}
+			else if (field == ELobbyUpdateField.MY_COLOR)
+			{
+				if (data.ContainsKey("color"))
+				{
+					int color = data["color"].GetInt32();
+
+					await using var db = await _dbFactory.CreateDbContextAsync();
+					await SourceMember.UpdateColor(db, color);
+				}
+			}
+			else if (field == ELobbyUpdateField.MY_START_POS)
+			{
+				if (data.ContainsKey("startpos"))
+				{
+					int startpos = data["startpos"].GetInt32();
+					SourceMember.UpdateStartPos(startpos);
+				}
+			}
+			else if (field == ELobbyUpdateField.MY_TEAM)
+			{
+				if (data.ContainsKey("team"))
+				{
+					int team = data["team"].GetInt32();
+					SourceMember.UpdateTeam(team);
+				}
+			}
+			else if (field == ELobbyUpdateField.LOBBY_STARTING_CASH)
+			{
+				if (data.ContainsKey("startingcash"))
+				{
+					UInt32 startingCash = data["startingcash"].GetUInt32();
+
+					await using var db = await _dbFactory.CreateDbContextAsync();
+					await lobby.UpdateStartingCash(db, startingCash);
+				}
+			}
+			else if (field == ELobbyUpdateField.LOBBY_ENFORCE_RANDOM)
+			{
+				if (data.ContainsKey("enforce_random"))
+				{
+					bool bEnforceRandom = data["enforce_random"].GetBoolean();
+
+					lobby.UpdateEnforceRandom(bEnforceRandom);
+				}
+			}
+			else if (field == ELobbyUpdateField.LOBBY_LIMIT_SUPERWEAPONS)
+			{
+				if (data.ContainsKey("limit_superweapons"))
+				{
+					bool bLimitSuperweapons = data["limit_superweapons"].GetBoolean();
+
+					await using var db = await _dbFactory.CreateDbContextAsync();
+					await lobby.UpdateLimitSuperweapons(db, bLimitSuperweapons);
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_FORCE_START)
+			{
+				// dummy action... just force everyone ready
+				lobby.ForceReady();
+			}
+			else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP)
+			{
+				if (data.ContainsKey("has_map"))
+				{
+					bool bHasMap = data["has_map"].GetBoolean();
+
+					SourceMember.UpdateHasMap(bHasMap);
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_KICK_USER)
+			{
+				if (data.ContainsKey("userid"))
+				{
+					Int64 KickedUserID = data["userid"].GetInt64();
+
+					// the target must actually be in THIS lobby, otherwise a host could wipe the
+					// TURN credentials / lobby state of any arbitrary online player. Checked here,
+					// under the gate, so it can't race a concurrent leave/kick of the same target;
+					// the actual removal runs after the gate is released (see PerformKickAsync).
+					if (lobby.GetMemberFromUserID(KickedUserID) != null)
+					{
+						return KickedUserID;
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_SET_SLOT_STATE)
+			{
+				UInt16 slot_index = data["slot_index"].GetUInt16();
+
+				if (!TryParseSlotState(data["slot_state"].GetUInt16(), out EPlayerType slot_state))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					return null;
+				}
+
+				// human slots are left alone; kicking is how a host removes a player
+				LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot_index);
+				if (TargetMember != null && TargetMember.SlotState != EPlayerType.SLOT_PLAYER)
+				{
+					TargetMember.SetPlayerSlotState(slot_state);
+				}
+			}
+			else if (field == ELobbyUpdateField.AI_SIDE)
+			{
+				if (data.ContainsKey("slot")
+					&& data.ContainsKey("side")
+					&& data.ContainsKey("start_pos")
+					)
+				{
+					int slot = data["slot"].GetInt32();
+					int side = data["side"].GetInt32();
+					int start_pos = data["start_pos"].GetInt32();
+
+					LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
+					if (TargetMember != null)
+					{
+						if (TargetMember.IsAI())
+						{
+							await using var db = await _dbFactory.CreateDbContextAsync();
+							await TargetMember.UpdateSide(db, side, start_pos);
+						}
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.AI_COLOR)
+			{
+				if (data.ContainsKey("slot")
+					&& data.ContainsKey("color"))
+				{
+					int slot = data["slot"].GetInt32();
+					int color = data["color"].GetInt32();
+
+					LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
+					if (TargetMember != null)
+					{
+						if (TargetMember.IsAI())
+						{
+							await using var db = await _dbFactory.CreateDbContextAsync();
+							await TargetMember.UpdateColor(db, color);
+						}
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.AI_TEAM)
+			{
+				if (data.ContainsKey("slot")
+					&& data.ContainsKey("team"))
+				{
+					int slot = data["slot"].GetInt32();
+					int team = data["team"].GetInt32();
+
+					LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
+					if (TargetMember != null)
+					{
+						if (TargetMember.IsAI())
+						{
+							TargetMember.UpdateTeam(team);
+						}
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.AI_START_POS)
+			{
+				if (data.ContainsKey("slot")
+					&& data.ContainsKey("start_pos"))
+				{
+
+					int slot = data["slot"].GetInt32();
+					int start_pos = data["start_pos"].GetInt32();
+
+					LobbyMember? TargetMember = lobby.GetMemberFromSlot(slot);
+					if (TargetMember != null)
+					{
+						if (TargetMember.IsAI())
+						{
+							TargetMember.UpdateStartPos(start_pos);
+						}
+					}
+				}
+			}
+			else if (field == ELobbyUpdateField.MAX_CAMERA_HEIGHT)
+			{
+				if (data.ContainsKey("max_camera_height"))
+				{
+					UInt16 maxCameraHeight = data["max_camera_height"].GetUInt16();
+					lobby.UpdateMaxCameraHeight(maxCameraHeight);
+				}
+			}
+			else if (field == ELobbyUpdateField.JOINABILITY)
+			{
+				ELobbyJoinability newLobbyJoinability = (ELobbyJoinability)data["joinability"].GetInt32();
+				lobby.UpdateJoinability(newLobbyJoinability);
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_BULK_SLOT_UPDATE)
+			{
+				if (data.ContainsKey("slots"))
+				{
+					foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
+					{
+						try
+						{
+							if (!slotEntry.TryGetProperty("slot_index", out var slotIndexProp))
+							{
+								continue;
+							}
+							int slotIndex = slotIndexProp.GetInt32();
+
+							LobbyMember? TargetMember = lobby.GetMemberFromSlot(slotIndex);
+							if (TargetMember == null)
+							{
+								continue;
+							}
+
+							// A slot that changed hands since the host took its snapshot is left
+							// alone: the newcomer must not inherit the departed player's roll.
+							if (slotEntry.TryGetProperty("user_id", out var userIdProp) && userIdProp.GetInt64() != TargetMember.UserID)
+							{
+								continue;
+							}
+
+							// Only the fields present are applied, and none of them is persisted
+							// as the member's favorite: a roll is not a choice.
+							int? side = slotEntry.TryGetProperty("side", out var sideProp) ? sideProp.GetInt32() : null;
+							int? color = slotEntry.TryGetProperty("color", out var colorProp) ? colorProp.GetInt32() : null;
+							int? startPos = slotEntry.TryGetProperty("start_pos", out var startPosProp) ? startPosProp.GetInt32() : null;
+							int? team = slotEntry.TryGetProperty("team", out var teamProp) ? teamProp.GetInt32() : null;
+							TargetMember.ApplyRolledSlot(side, color, startPos, team);
+						}
+						catch
+						{
+							continue;
+						}
+					}
+					lobby.DirtyRetransmit();
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS)
+			{
+				// Resume-from-replay: the recording fixes who sat where, so the host sends the whole
+				// arrangement in one request and the lobby is rebuilt to match. Every current human
+				// must be placed exactly once and the owner must stay in slot 0; anything else is
+				// refused with a reason the host can show, and the lobby is left as it was.
+				if (!data.ContainsKey("slots") || data["slots"].ValueKind != JsonValueKind.Array)
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no slots";
+					return null;
+				}
+				List<LobbySlotSpec> specs = new List<LobbySlotSpec>();
+				foreach (JsonElement slotEntry in data["slots"].EnumerateArray())
+				{
+					LobbySlotSpec spec = new LobbySlotSpec();
+					if (!slotEntry.TryGetProperty("slot_index", out var idxProp) || !idxProp.TryGetInt32(out spec.SlotIndex)
+						|| !slotEntry.TryGetProperty("slot_state", out var stateProp) || !stateProp.TryGetInt32(out int stateInt))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						m_strFieldUpdateError = "malformed slot entry";
+						return null;
+					}
+					spec.SlotState = (EPlayerType)stateInt;
+					spec.UserID = slotEntry.TryGetProperty("user_id", out var uidProp) && uidProp.TryGetInt64(out Int64 uid) ? uid : -1;
+					spec.Side = slotEntry.TryGetProperty("side", out var sideProp) && sideProp.TryGetInt32(out int side) ? side : -1;
+					spec.Color = slotEntry.TryGetProperty("color", out var colorProp) && colorProp.TryGetInt32(out int color) ? color : -1;
+					spec.StartPos = slotEntry.TryGetProperty("start_pos", out var spProp) && spProp.TryGetInt32(out int sp) ? sp : -1;
+					spec.Team = slotEntry.TryGetProperty("team", out var teamProp) && teamProp.TryGetInt32(out int team) ? team : -1;
+					specs.Add(spec);
+				}
+				string? alignError = await lobby.AlignSlots(specs);
+				if (alignError != null)
+				{
+					Console.WriteLine($"[Lobby {lobby.LobbyID}] Resume: ALIGN_SLOTS from user {SourceMember.UserID} refused: {alignError}");
+					Response.StatusCode = (int)HttpStatusCode.Conflict;
+					m_strFieldUpdateError = alignError;
+					return null;
+				}
+			}
+			else if (field == ELobbyUpdateField.HOST_ACTION_ARM_RESUME)
+			{
+				// Resume-from-replay: the host arms the resume source it uploaded (POST {lobbyID}/resume_replay).
+				// The client replays it in lockstep up to handoff_frame on game start, so the lobby
+				// must start from the replay's seed. handoff_frame 0 disarms. Every refusal is an
+				// explicit error: a client that announced an arm the service dropped would have
+				// every guest start a fresh match.
+				if (data.ContainsKey("replay_file"))
+				{
+					// legacy field from clients that still name the file: only the recorder's own name is acceptable
+					string? replayFile = data["replay_file"].ValueKind == JsonValueKind.String ? data["replay_file"].GetString() : null;
+					if (replayFile == null || (replayFile.Length > 0 && !ResumeReplayFileNamePattern.IsMatch(replayFile)))
+					{
+						Response.StatusCode = (int)HttpStatusCode.BadRequest;
+						m_strFieldUpdateError = "bad replay file name";
+						return null;
+					}
+				}
+				if (!data.ContainsKey("handoff_frame")
+					|| data["handoff_frame"].ValueKind != JsonValueKind.Number
+					|| !data["handoff_frame"].TryGetUInt32(out UInt32 handoffFrame))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no handoff frame";
+					return null;
+				}
+				int rngSeed = 0;
+				if (handoffFrame != 0
+					&& (!data.ContainsKey("rng_seed")
+						|| data["rng_seed"].ValueKind != JsonValueKind.Number
+						|| !data["rng_seed"].TryGetInt32(out rngSeed)))
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "no rng seed";
+					return null;
+				}
+				if (!lobby.UpdateResumeArm(handoffFrame, rngSeed))
+				{
+					// arming without an uploaded source
+					Response.StatusCode = (int)HttpStatusCode.Conflict;
+					m_strFieldUpdateError = "no resume source uploaded";
+					return null;
+				}
+			}
+			else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY)
+			{
+				// whether this member holds a usable copy of the resume source (the way has_map works)
+				if (data.ContainsKey("has_resume_replay") && (data["has_resume_replay"].ValueKind == JsonValueKind.True || data["has_resume_replay"].ValueKind == JsonValueKind.False))
+				{
+					SourceMember.UpdateHasResumeReplay(data["has_resume_replay"].GetBoolean());
+				}
+				else
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "bad has_resume_replay";
+					return null;
+				}
+			}
+
+			if (bSlotField && lobby.RosterFingerprint() != strRosterBefore)
+			{
+				lobby.ClearResumeArm($"slot change ({field}) by user {SourceMember.UserID}");
+			}
+
+			return null;
+		}
+
+		// Runs the parts of a kick that RemoveMember itself performs (leaving the lobby, which
+		// acquires this same lobby's gate) plus TURN/session cleanup - all after
+		// ApplyLobbyFieldUpdateAsync's gate has been released, never from inside it.
+		private async Task PerformKickAsync(Lobby lobby, Int64 kickedUserID)
+		{
+			// TODO: we should communicate the kick to the user...
+			await _lobbyManager.LeaveSpecificLobby(kickedUserID, lobby.LobbyID);
+
+			// cleanup TURN credentials
+			TURNCredentialManager.DeleteCredentialsForUser(kickedUserID);
+
+			// clear our lobby ID
+			UserSession? sourceData = WebSocketManager.GetSessionFromUser(kickedUserID, EUserSessionType.GameClient); // user being kicked must be a game client
+
+			if (sourceData != null)
+			{
+				sourceData.UpdateSessionLobbyID(-1);
+				// NOTE: We dont update the match history match ID here, that is done by the match history service
+			}
+
+			// we have to manually send to the kicked user... they won't get the dirty lobby update anymore
+			await lobby.DirtyRetransmitToSingleMember(kickedUserID);
 		}
 
 		/// <summary>
@@ -1121,6 +1190,13 @@ namespace GenOnlineService.Controllers
 							EUserSessionType sessionType = TokenHelper.GetSessionType(this);
 							if (user_id != -1 && SessionHelpers.SessionTypeHasAccessTo(sessionType, ESessionAccessType.Gameplay))
 							{
+								if (lobby.LobbyType == ELobbyType.QuickMatch && !lobby.MatchedUserIDs.Contains(user_id))
+								{
+									Response.StatusCode = (int)HttpStatusCode.Forbidden;
+									result.success = false;
+									return result;
+								}
+
 								UInt16 userPreferredPort = data["preferred_port"].GetUInt16();
 								bool bHasMap = data["has_map"].GetBoolean();
 								EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();
@@ -1167,7 +1243,7 @@ namespace GenOnlineService.Controllers
 								if (playerSession != null)
 								{
 									// leave any lobby
-									_lobbyManager.LeaveAnyLobby(user_id);
+									await _lobbyManager.LeaveAnyLobby(user_id);
 
 									await using var db = await _dbFactory.CreateDbContextAsync();
 									string strDisplayName = await Database.Users.GetDisplayName(db, user_id);

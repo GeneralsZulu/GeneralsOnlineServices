@@ -23,5 +23,6 @@
 	"ibra_minslack_greaterthan200ms": 0.4,
 	"ibra_maxslack_greaterthan200ms": 1.0,
 	"screenshot_width": 1440,
-	"screenshot_height": 700
+	"screenshot_height": 700,
+	"ice_implementation": 1
 }
