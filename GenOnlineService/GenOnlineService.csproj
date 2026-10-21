@@ -16,6 +16,10 @@
 		<PackageReference Update="System.Linq.AsyncEnumerable" ExcludeAssets="all" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<InternalsVisibleTo Include="GenOnlineService.Tests" />
+	</ItemGroup>
+
 
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <WarningLevel>0</WarningLevel>

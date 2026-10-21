@@ -1462,7 +1462,7 @@ public async Task FinalizeACChecks()
 				{
 					++numClosed;
 				}
-				else if (memberEntry.SlotState == EPlayerType.SLOT_EASY_AI || memberEntry.SlotState == EPlayerType.SLOT_MED_AI || memberEntry.SlotState == EPlayerType.SLOT_BRUTAL_AI)
+				else if (memberEntry.SlotState == EPlayerType.SLOT_EASY_AI || memberEntry.SlotState == EPlayerType.SLOT_MED_AI || memberEntry.SlotState == EPlayerType.SLOT_BRUTAL_AI || memberEntry.SlotState == EPlayerType.SLOT_TACTICAL_AI)
 				{
 					++numAI;
 				}
@@ -1787,7 +1787,7 @@ public async Task FinalizeACChecks()
 						}
 						newMembers[spec.SlotIndex] = human;
 					}
-					else if ((int)spec.SlotState >= (int)EPlayerType.SLOT_OPEN && (int)spec.SlotState <= (int)EPlayerType.SLOT_PLAYER + 1) // + 1: the client's Tactical AI kind, which SET_SLOT_STATE already lets through
+					else if ((int)spec.SlotState >= (int)EPlayerType.SLOT_OPEN && (int)spec.SlotState <= (int)EPlayerType.SLOT_TACTICAL_AI)
 					{
 						newMembers[spec.SlotIndex] = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, spec.Side, spec.Color, spec.StartPos, spec.SlotState, (UInt16)spec.SlotIndex, true);
 					}
@@ -2127,7 +2127,7 @@ public async Task FinalizeACChecks()
 		}
 
 		public bool IsHuman() {  return SlotState == EPlayerType.SLOT_PLAYER; }
-		public bool IsAI() { return SlotState == EPlayerType.SLOT_EASY_AI || SlotState == EPlayerType.SLOT_MED_AI || SlotState == EPlayerType.SLOT_BRUTAL_AI; }
+		public bool IsAI() { return SlotState == EPlayerType.SLOT_EASY_AI || SlotState == EPlayerType.SLOT_MED_AI || SlotState == EPlayerType.SLOT_BRUTAL_AI || SlotState == EPlayerType.SLOT_TACTICAL_AI; }
 
 		private void DirtyRetransmit()
 		{

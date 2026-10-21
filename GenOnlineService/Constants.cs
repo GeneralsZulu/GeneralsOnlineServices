@@ -2854,7 +2854,8 @@ namespace GenOnlineService
 		SLOT_EASY_AI,
 		SLOT_MED_AI,
 		SLOT_BRUTAL_AI,
-		SLOT_PLAYER
+		SLOT_PLAYER,
+		SLOT_TACTICAL_AI // Zulu client addition, sits past SLOT_PLAYER on the wire
 	}
 
 	public enum EWebSocketMessageID
