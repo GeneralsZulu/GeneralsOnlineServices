@@ -143,7 +143,10 @@ namespace GenOnlineService.Controllers
 		LOBBY_ENFORCE_RANDOM = 22,
 		// TheSuperHackers @feature bill-rich 11/10/2026 Resume-from-replay: the host places every
 		// slot (occupant, kind, faction, color, start position, team) the way the recording had it.
-		HOST_ACTION_ALIGN_SLOTS = 23
+		HOST_ACTION_ALIGN_SLOTS = 23,
+		// TheSuperHackers @feature bill-rich 02/11/2026 FFA mode: the client hides who is who
+		// from the players. The service only stores and relays the flag.
+		LOBBY_FFA_MODE = 24
     };
 
 	public class RouteHandler_ResumeReplay_Result : APIResult
@@ -435,7 +438,8 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.HOST_ACTION_ARM_RESUME] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone,
 			[ELobbyUpdateField.LOBBY_ENFORCE_RANDOM] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.LOBBY_FFA_MODE] = ELobbyUpdatePermissions.LobbyOwner
 		};
 
 		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
@@ -715,6 +719,13 @@ namespace GenOnlineService.Controllers
 					bool bEnforceRandom = data["enforce_random"].GetBoolean();
 
 					lobby.UpdateEnforceRandom(bEnforceRandom);
+				}
+			}
+			else if (field == ELobbyUpdateField.LOBBY_FFA_MODE)
+			{
+				if (data.ContainsKey("ffa_mode"))
+				{
+					lobby.UpdateFFAMode(data["ffa_mode"].GetBoolean());
 				}
 			}
 			else if (field == ELobbyUpdateField.LOBBY_LIMIT_SUPERWEAPONS)
