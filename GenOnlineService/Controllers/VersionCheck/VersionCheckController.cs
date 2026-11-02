@@ -52,6 +52,7 @@ namespace GenOnlineService.Controllers
 		public string patcher_name { get; set; } = String.Empty;
 		public string patcher_path { get; set; } = String.Empty;
 		public Int64 patcher_size { get; set; } = 0;
+		public bool dev_build { get; set; } = false;
 	}
 
 	public class GET_VersionManifest_Result : APIResult
@@ -198,10 +199,13 @@ namespace GenOnlineService.Controllers
 						bool bNetVersionMatches = netver == Constants.GENERALS_ONLINE_NET_VERSION;
 						bool bServicesVersionMatches = servicesver == Constants.GENERALS_ONLINE_SERVICE_VERSION;
 						bool bExeCRCMatches = execrc == calculatedCRC_Exe_30 || execrc == calculatedCRC_Exe_60;
+						EBuildSignature buildSig = bExeCRCMatches ? EBuildSignature.None
+							: BuildSignature.Check(data.TryGetValue("buildsig", out JsonElement buildsig) ? buildsig.ToString() : null, execrc);
 
-						if (!bDoCRCChecks || (bVersionMatches && bNetVersionMatches && bServicesVersionMatches && bExeCRCMatches))
+						if (!bDoCRCChecks || (bVersionMatches && bNetVersionMatches && bServicesVersionMatches && (bExeCRCMatches || buildSig != EBuildSignature.None)))
 						{
 							result.result = EVersionCheckResult.OK;
+							result.dev_build = buildSig == EBuildSignature.Dev;
 						}
 						else
 						{
