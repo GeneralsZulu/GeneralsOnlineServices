@@ -711,6 +711,9 @@ namespace GenOnlineService
 		// arrives as a bulk slot update, which the enforcement deliberately skips.
 		// Not a user favorite and not persisted: it is a rule for this lobby.
 		public bool IsEnforceRandom { get; private set; } = false;
+		// FFA mode: the clients hide who is who from the players. Like
+		// IsEnforceRandom, a rule for this lobby and not persisted.
+		public bool IsFFAMode { get; private set; } = false;
 		public bool IsTrackingStats { get; private set; } = false;
 		public bool IsPassworded { get; private set; } = false;
 
@@ -1607,6 +1610,12 @@ public async Task FinalizeACChecks()
 			{
 				ClearResumeArm("enforce random changed"); // the recording fixes the factions and the teams
 			}
+			DirtyRetransmitLobbyList();
+		}
+
+		public void UpdateFFAMode(bool bFFAMode)
+		{
+			IsFFAMode = bFFAMode;
 			DirtyRetransmitLobbyList();
 		}
 
