@@ -1,23 +1,12 @@
-Thank you for playing the Generals Online for Zero Hour Alpha.
+Welcome to Zulu GO for Zero Hour!
 There are currently {0} player(s) online.
 
-Need Help? Visit our Discord.
-
-\ffff7f2f========= Community Rules =========
-\ffff0000 Code of Conduct: www.playgenerals.online/codeofconduct
-\ffff0000 Last Updated: January 16th 2026
-
 \ffff7f2f========= Useful Links =========
-Website: www.playgenerals.online
-Discord: discord.playgenerals.online
-GameReplays: www.gamereplays.org
-
-\ffff7f2f========= Update Info =========
-Client Updated: January 21, 2026
-Server Updated: January 15, 2026
-Patch Notes: www.playgenerals.online/patchnotes
+Match History & Stats: www.radarvan.com
 
 \ffff7f2f========= Notes & Thanks =========
-GeneralsOnline is in no way affiliated with EA/Electronic arts or the Command & Conquer franchise/brand.
+Zulu GO is in no way affiliated with EA/Electronic Arts or the Command & Conquer franchise/brand.
 
-Special thanks to the everyone who contributed to development & the SuperHackers team who make GeneralsOnline possible
+Special thanks to Bill Rich / 131 for making Zulu GO possible.
+
+Zulu GO is built on GeneralsOnline by the GeneralsOnline Development Team, and on the work of the SuperHackers team.
