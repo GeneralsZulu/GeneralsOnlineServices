@@ -7,6 +7,9 @@ Match History & Stats: www.radarvan.com
 \ffff7f2f========= Notes & Thanks =========
 Zulu GO is in no way affiliated with EA/Electronic Arts or the Command & Conquer franchise/brand.
 
-Special thanks to Bill Rich / 131 for making Zulu GO possible.
+Special thanks to:
+Bill Rich / 131, for making Zulu GO possible.
+Brendan Fahy / Modus, for radarvan and the match history and stats behind it.
+The Zulu group, for the feedback, the requests, and working through the bugs.
 
 Zulu GO is built on GeneralsOnline by the GeneralsOnline Development Team, and on the work of the SuperHackers team.
