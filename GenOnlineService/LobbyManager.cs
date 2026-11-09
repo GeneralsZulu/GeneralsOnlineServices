@@ -631,14 +631,20 @@ namespace GenOnlineService
 			// more than once, so drop anything carried over from a previous match on this lobby.
 			ReportedOutcomes.Clear();
 
+			// Count them: an outcome report for a match the session never registered comes
+			// back 401, so a silently short registration costs the match its result.
+			int registered = 0;
 			// store on each player
 			foreach (LobbyMember member in Members)
 			{
-				if (member.GetSession().TryGetTarget(out UserSession? session))
+				if (member != null && member.GetSession().TryGetTarget(out UserSession? session))
 				{
 					session.RegisterHistoricMatchID(MatchID, member.SlotIndex, member.Side, TimeCreated);
+					++registered;
 				}
 			}
+
+			Console.WriteLine("[Lobby {0}] Match {1} registered on {2} session(s)", LobbyID, MatchID, registered);
 
 			// for each member, if this is QM, and they havent played 10 games, flag it for review, its a new user
 			if (LobbyType == ELobbyType.QuickMatch)

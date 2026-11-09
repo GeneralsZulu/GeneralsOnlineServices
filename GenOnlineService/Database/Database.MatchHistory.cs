@@ -555,7 +555,11 @@ namespace Database
 				await db.SaveChangesAsync();
 
 				ulong id = (ulong)entity.MatchId;
-				lobby.SetMatchID(id);
+				// MUST be awaited: this is what registers the match on every player's session, and an outcome report
+				// for an unregistered match is rejected 401. Un-awaited it escaped this
+				// try/catch as an unobserved task, so a partial or failed registration left
+				// no trace anywhere - which is exactly what happened to game 9 on 2026-11-08.
+				await lobby.SetMatchID(id);
 
 				return id;
 			}

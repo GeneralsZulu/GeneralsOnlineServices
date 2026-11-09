@@ -353,8 +353,14 @@ namespace GenOnlineService.Controllers
 								UInt64 match_id = data["match_id"].GetUInt64();
 
 								// were they really in the match they claim to be in?
+								// A rejected outcome means no winner and no stats for that match, and
+								// it used to answer a bare 401 and log nothing. On 2026-11-08 all three
+								// players of one game were rejected and there was no way to tell why.
 								if (!sourceData.WasPlayerInMatch(match_id, out int slotIndexInLobby, out int army, out DateTime LobbyCreationTime))
 								{
+									Console.WriteLine("User {0} outcome REFUSED for match {1}: not a known match of this session (session is in lobby {2}, whose match is {3})",
+										user_id, match_id, sourceData.currentLobbyID,
+										_lobbyManager.GetLobby(sourceData.currentLobbyID)?.MatchID);
 									Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 									return null;
 								}
