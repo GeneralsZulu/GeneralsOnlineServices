@@ -135,6 +135,16 @@ namespace GenOnlineService.Controllers
 			}
 
 			result.success = true;
+			// Who watched what was recorded nowhere, so when a spectator crashed there was
+			// no server-side trace that they had even been watching. from == 0 is the start
+			// of a watch (an observer must read from the beginning to re-simulate), so this
+			// is one line per watch, not one per poll.
+			if (from == 0)
+			{
+				Console.WriteLine("User {0} started watching lobby {1} (stream {2} bytes, ended {3})",
+					TokenHelper.GetUserID(this), lobbyID, stream.Length, stream.Ended);
+			}
+
 			result.total = stream.Length;
 			result.available = stream.AvailableLength();
 			result.ended = stream.Ended;
