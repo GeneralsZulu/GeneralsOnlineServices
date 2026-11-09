@@ -1138,9 +1138,26 @@ public async Task FinalizeACChecks()
 			// longer result in two concurrent joins picking the same slot.
 			return await RunExclusiveAsync(async () =>
 			{
+				// A refused join is answered with a bare 406 and, until now, was
+				// logged nowhere at all: the only join log line below sits on the
+				// success path, so all six refusal reasons collapsed into one
+				// silent status code. On 2026-11-08 a guest retried 8 times over
+				// 74 s and the only way to tell why was to find the lobby JSON in
+				// a client's own log.
+				Func<string, bool> refuse = reason =>
+				{
+					// Members is a fixed-size slot array, so count states, not length.
+					int openSlots = Members.Count(m => m != null && m.SlotState == EPlayerType.SLOT_OPEN);
+					int occupied = Members.Count(m => m != null && m.SlotState != EPlayerType.SLOT_OPEN
+						&& m.SlotState != EPlayerType.SLOT_CLOSED);
+					Console.WriteLine("User {0} refused lobby {1}: {2} (lobby state {3}, {4} open slot(s), {5} occupied)",
+						playerSession.m_UserID, LobbyID, reason, State, openSlots, occupied);
+					return false;
+				};
+
 				if (State != ELobbyState.GAME_SETUP)
 				{
-					return false;
+					return refuse("lobby is not in setup");
 				}
 
 				// NOTE: this must be inside the lock, otherwise two concurrent joins for the same user can both pass
@@ -1148,7 +1165,7 @@ public async Task FinalizeACChecks()
 				LobbyMember? existingMember = GetMemberFromUserID(playerSession.m_UserID);
 				if (existingMember != null) // we're already in this lobby
 				{
-					return false;
+					return refuse("already a member of this lobby");
 				}
 
 				// find first open slot
@@ -1167,7 +1184,9 @@ public async Task FinalizeACChecks()
 
 				if (!bFoundSlot)
 				{
-					return false;
+					// The common one: these maps carry 2 slots, so a 3rd player
+					// cannot get in until the host opens one by hand.
+					return refuse("no open slot");
 				}
 
                 // Check social requirements (dont allow blocked in, and check friends only)
@@ -1182,7 +1201,7 @@ public async Task FinalizeACChecks()
                         // dont allow join if blocked
                         if (lobbyOwnerSharedData.GetSocialContainer().Blocked.Contains(playerSession.m_UserID))
                         {
-                            return false;
+                            return refuse("blocked by the lobby owner");
                         }
 
                         // check joinability
@@ -1191,7 +1210,7 @@ public async Task FinalizeACChecks()
                             // If it's friends only, return false if they aren't friends
                             if (!lobbyOwnerSharedData.GetSocialContainer().Friends.Contains(playerSession.m_UserID))
                             {
-                            return false;
+                            return refuse("lobby is friends-only and this user is not a friend");
                             }
                         }
                     }
@@ -1327,7 +1346,7 @@ public async Task FinalizeACChecks()
 			// Notify lobby members and room browsers.
 			DirtyRetransmitLobbyList();
 
-			Console.WriteLine("User {0} joined lobby {1}: {2} (Slot was {3})", playerSession.m_UserID, LobbyID, true, slotIndex);
+			Console.WriteLine("User {0} joined lobby {1}: slot {2}", playerSession.m_UserID, LobbyID, slotIndex);
 			return true;
 			});
 		}
@@ -2435,6 +2454,9 @@ public async Task FinalizeACChecks()
 				return bAdded;
 			}
 
+			// The sixth refusal reason, and the only one AddMember cannot log.
+			Console.WriteLine("User {0} refused lobby {1}: no lobby preferences row for this user",
+				playerSession.m_UserID, lobby.LobbyID);
 			return false;
 		}
 
