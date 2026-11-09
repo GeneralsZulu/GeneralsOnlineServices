@@ -135,6 +135,11 @@ namespace GenOnlineService.Controllers
 								await using var db = await _dbFactory.CreateDbContextAsync();
 								await Database.ConnectionOutcomes.StoreConnectionOutcome(db, protocol, outcome);
 
+								// result.success was never set, so a stored outcome still answered
+								// {"success":false} on a 200 - ~85 misleading log lines per player
+								// per night, and no way to spot a real failure among them.
+								result.success = true;
+
 								Response.StatusCode = (int)HttpStatusCode.OK;
 							}
 							else
