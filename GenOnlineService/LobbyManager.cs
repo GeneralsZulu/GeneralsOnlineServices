@@ -95,7 +95,7 @@ namespace GenOnlineService
 		public string MapName { get; private set; } = "";
 		public string MapPath { get; private set; } = "";
 		public bool IsMapOfficial { get; private set; } = false;
-		// TheSuperHackers @feature bill-rich 02/10/2026 CRC of the lobby's map, as the
+		// CRC of the lobby's map, as the
 		// hosting client computed it. In-memory only, like IsEnforceRandom, not a DB
 		// column and not a user favourite. It exists so a member who does not have the
 		// map can fetch exactly that map from the cncstats store, which is keyed by CRC;
@@ -1558,7 +1558,7 @@ public async Task FinalizeACChecks()
 		public async Task UpdateMap(AppDbContext _db, string strMap, string strMapPath, bool bOfficialMap, int newMaxPlayers, UInt32 map_crc = 0)
 		{
 			int oldMaxPlayers = MaxPlayers;
-			// TheSuperHackers @feature bill-rich 11/10/2026 A no-op update (same map, cash or limit) must not
+			// A no-op update (same map, cash or limit) must not
 			// disarm a resume: the arming client re-sends the recording's settings and its own UI echoes them.
 			bool bMapChanged = MapName != strMap || MapPath != FixMapPathForGame(strMapPath) || MapCRC != map_crc || oldMaxPlayers != newMaxPlayers;
 			MapName = strMap;
@@ -1615,7 +1615,7 @@ public async Task FinalizeACChecks()
 
 		public void UpdateEnforceRandom(bool bEnforceRandom)
 		{
-			// TheSuperHackers @bugfix bill-rich 16/10/2026 Only a real change disarms: the host's UI re-sends
+			// Only a real change disarms: the host's UI re-sends
 			// this with every settings echo, and an unconditional disarm here was one of the two things
 			// that undid an arm the moment it was made.
 			bool bChanged = IsEnforceRandom != bEnforceRandom;
@@ -1778,7 +1778,7 @@ public async Task FinalizeACChecks()
 		/// the source (the host flags itself right after, guests after downloading).
 		/// </summary>
 		/// <summary>
-		/// TheSuperHackers @feature bill-rich 11/10/2026 Resume-from-replay: rebuilds the slot table the way
+		/// Resume-from-replay: rebuilds the slot table the way
 		/// the host's recording had it (HOST_ACTION_ALIGN_SLOTS). Humans are moved, not re-created, so their
 		/// sessions and mesh state carry over; AI, open and closed slots are fresh placeholders. Nothing is
 		/// applied unless the whole request is acceptable: all eight slots named, every current human placed
@@ -2058,7 +2058,7 @@ public async Task FinalizeACChecks()
 
 	}
 	/// <summary>
-	/// TheSuperHackers @feature bill-rich 11/10/2026 One slot of a HOST_ACTION_ALIGN_SLOTS request (see Lobby.AlignSlots).
+	/// One slot of a HOST_ACTION_ALIGN_SLOTS request (see Lobby.AlignSlots).
 	/// </summary>
 	public class LobbySlotSpec
 	{

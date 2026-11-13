@@ -106,7 +106,7 @@ namespace GenOnlineService.Controllers
 		}
 
 		public bool success { get; set; } = false;
-		// TheSuperHackers @feature bill-rich 11/10/2026 Why a refused host action was refused, for the lobby chat. Empty on success.
+		// Why a refused host action was refused, for the lobby chat. Empty on success.
 		public string error { get; set; } = String.Empty;
 	}
 
@@ -141,10 +141,10 @@ namespace GenOnlineService.Controllers
 		HOST_ACTION_ARM_RESUME = 20,
 		LOCAL_PLAYER_HAS_RESUME_REPLAY = 21,
 		LOBBY_ENFORCE_RANDOM = 22,
-		// TheSuperHackers @feature bill-rich 11/10/2026 Resume-from-replay: the host places every
+		// Resume-from-replay: the host places every
 		// slot (occupant, kind, faction, color, start position, team) the way the recording had it.
 		HOST_ACTION_ALIGN_SLOTS = 23,
-		// TheSuperHackers @feature bill-rich 02/11/2026 FFA mode: the client hides who is who
+		// FFA mode: the client hides who is who
 		// from the players. The service only stores and relays the flag.
 		LOBBY_FFA_MODE = 24
     };
@@ -592,7 +592,7 @@ namespace GenOnlineService.Controllers
 			// position and team (the map, cash and superweapon handlers disarm inside the lobby), so
 			// a slot change disarms. The host re-arms after fixing the lobby.
 			//
-			// TheSuperHackers @bugfix bill-rich 16/10/2026 Decided after the update, on whether the
+			// Decided after the update, on whether the
 			// roster actually changed, not on the field name. The arming client's own UI echoes the
 			// slot it was just moved to (MY_SIDE / MY_COLOR / MY_START_POS with the values the
 			// alignment set), and HOST_ACTION_ALIGN_SLOTS is the first half of arming itself; both
@@ -653,7 +653,7 @@ namespace GenOnlineService.Controllers
 						return null;
 					}
 
-					// TheSuperHackers @feature bill-rich 02/10/2026 Optional: a member
+					// Optional: a member
 					// without this map fetches it from the cncstats store by CRC. Older
 					// clients do not send it, hence the ContainsKey guard and the 0.
 					UInt32 mapCRC = 0;

@@ -1239,7 +1239,7 @@ namespace GenOnlineService.Controllers
 							List<List<object>> result = JsonSerializer.Deserialize<List<List<object>>>(respElement.GetRawText(), JsonOpts);
 							//Console.WriteLine("Len: {0}", result.Count);
 
-							// TheSuperHackers @bugfix bill-rich 16/10/2026 Module review needs a whitelist to review
+							// Module review needs a whitelist to review
 							// against. Without AC.allowed_modules / allowed_module_paths in the config every module of
 							// every player is "not whitelisted", and each one is an insert into ac_reviews_modules
 							// (5131 failures on 2026-10-14, one per DLL). No whitelist means the review is off.

@@ -289,7 +289,7 @@ namespace GenOnlineService.Controllers
 						UInt32 ini_crc = data["ini_crc"].GetUInt32();
 						EKnownAnticheatID anticheatID = (EKnownAnticheatID)data["anticheat_id"].GetInt32();
 
-						// TheSuperHackers @feature bill-rich 02/10/2026 Optional: the map's CRC,
+						// Optional: the map's CRC,
 						// so a joiner without it can fetch that exact map from the cncstats
 						// store. Not in the ContainsKey gate above, since older clients omit it.
 						UInt32 map_crc = 0;
