@@ -992,7 +992,8 @@ namespace GenOnlineService.Controllers
 					// start match + create placeholder match
 					await lobbyInfo.UpdateState(ELobbyState.INGAME);
 
-					// simple websocket msg, has no data, so dont even read anything
+					Int64 routerUserID = lobbyInfo.ChoosePacketRouter();
+					Console.WriteLine("[START_GAME] lobby {0} packet router user {1} (-1 = first human slot)", lobbyInfo.LobbyID, routerUserID);
 
 
 					foreach (LobbyMember lobbyMember in lobbyInfo.Members)
@@ -1006,6 +1007,7 @@ namespace GenOnlineService.Controllers
 									// response
 									WebSocketMessage_StartMatch startCommand = new WebSocketMessage_StartMatch();
 									startCommand.msg_id = (int)EWebSocketMessageID.START_GAME;
+									startCommand.router_user_id = routerUserID;
 									startCommand.screenshot_url = await S3CredentialManager.GetPresignedURL(EMetadataFileType.FILE_TYPE_SCREENSHOT, EScreenshotType.SCREENSHOT_TYPE_LOADSCREEN, lobbyInfo.MatchID, lobbyMember.UserID, lobbyMember.SlotIndex, lobbyInfo.TimeCreated) ?? String.Empty;
 
 									// Serialize once before broadcasting

@@ -36,6 +36,56 @@ using System.Xml.Linq;
 
 namespace GenOnlineService
 {
+	// Which member every client relays its moves through (the lockstep packet router).
+	internal static class PacketRouterChoice
+	{
+		// humans: (user id, slot index). pings: each user's reported ping to each peer, -1 when relayed.
+		// Only a member with a direct link to every other human qualifies; the one whose slowest link is
+		// fastest wins, ties to the lower slot. -1 when nobody qualifies, so clients keep their default.
+		internal static Int64 Choose(IReadOnlyList<(Int64 userID, int slot)> humans, IReadOnlyDictionary<Int64, Dictionary<Int64, int>> pings)
+		{
+			if (humans.Count < 3)
+			{
+				return -1; // with two players either one relays nothing
+			}
+
+			Int64 best = -1;
+			int bestWorst = int.MaxValue;
+			int bestSlot = int.MaxValue;
+			foreach (var candidate in humans)
+			{
+				if (!pings.TryGetValue(candidate.userID, out Dictionary<Int64, int>? mine))
+				{
+					continue;
+				}
+
+				int worst = 0;
+				bool qualifies = true;
+				foreach (var other in humans)
+				{
+					if (other.userID == candidate.userID)
+					{
+						continue;
+					}
+					if (!mine.TryGetValue(other.userID, out int ping) || ping < 0)
+					{
+						qualifies = false;
+						break;
+					}
+					worst = Math.Max(worst, ping);
+				}
+
+				if (qualifies && (worst < bestWorst || (worst == bestWorst && candidate.slot < bestSlot)))
+				{
+					best = candidate.userID;
+					bestWorst = worst;
+					bestSlot = candidate.slot;
+				}
+			}
+			return best;
+		}
+	}
+
 	internal static class FullMeshCheckProtocol
 	{
 		// TODO: Remove the zero-valued response compatibility path when legacy
@@ -221,6 +271,16 @@ namespace GenOnlineService
 		[JsonIgnore]
 		public ConcurrentDictionary<Int64, ConcurrentList<Int64>> FullMeshConnectivityChecks { get; set; } = new();
 
+		// each member's last reported ping per peer (-1 = relayed), for PacketRouterChoice
+		[JsonIgnore]
+		public ConcurrentDictionary<Int64, Dictionary<Int64, int>> FullMeshPings { get; set; } = new();
+
+		public Int64 ChoosePacketRouter()
+		{
+			var humans = Members.Where(m => m != null && m.IsHuman()).Select(m => (m.UserID, (int)m.SlotIndex)).ToList();
+			return PacketRouterChoice.Choose(humans, FullMeshPings);
+		}
+
 
 		// AC Probes
 		[JsonIgnore]
@@ -292,6 +352,7 @@ namespace GenOnlineService
 		{
 			PendingFullMeshConnectivityChecks = true;
 			FullMeshConnectivityChecks = new();
+			FullMeshPings = new();
 			m_FullMeshConnecting = new();
 			m_bCurrentAttemptHasLegacyResponse = false;
 			TimeStartFullMeshChecks = Environment.TickCount64;
@@ -405,6 +466,10 @@ namespace GenOnlineService
 					m_bCurrentAttemptHasLegacyResponse |= bLegacyResponse;
 					FullMeshConnectivityChecks[sourceUser] = new ConcurrentList<Int64>(response.connectivity_map);
 					m_FullMeshConnecting[sourceUser] = new HashSet<Int64>(response.connecting_map);
+					if (response.ping_ms.Count == response.connectivity_map.Count)
+					{
+						FullMeshPings[sourceUser] = response.connectivity_map.Zip(response.ping_ms).ToDictionary(p => p.First, p => p.Second);
+					}
 				}
 
 				ProcessPendingFullMeshConnectivityChecksInternal();

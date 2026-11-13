@@ -3004,6 +3004,9 @@ namespace GenOnlineService
 	public class WebSocketMessage_StartMatch : WebSocketMessage
 	{
 		public string screenshot_url { get; set; } = String.Empty;
+
+		// the member every client relays its moves through; -1 leaves the client's own default (first human slot)
+		public Int64 router_user_id { get; set; } = -1;
 	}
 
 	public class WebSocketMessage_ModerationNotice : WebSocketMessage
@@ -3058,6 +3061,10 @@ namespace GenOnlineService
 
 		// peers the member is still negotiating with; absent from older clients
 		public List<Int64> connecting_map { get; set; } = new();
+
+		// ping in ms to each connectivity_map entry, same order, -1 when the link is relayed;
+		// absent from older clients
+		public List<int> ping_ms { get; set; } = new();
 	}
 
 	public class WebSocketMessage_Social_NewFriendRequest : WebSocketMessage
