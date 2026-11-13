@@ -611,7 +611,7 @@ namespace GenOnlineService.Controllers
 			string strRosterBefore = bSlotField ? lobby.RosterFingerprint() : String.Empty;
 
 			// While the host has enforce-random set, only Random (-1) is an
-			// acceptable faction or team. The client already locks its
+			// acceptable faction, team or start spot. The client already locks its
 			// dropdowns, so this is for a client that does not, and for one
 			// that had a pick in flight when the host ticked the box. The
 			// host's Randomize roll arrives as a bulk slot update and is
@@ -628,6 +628,15 @@ namespace GenOnlineService.Controllers
 				else if (field == ELobbyUpdateField.MY_TEAM || field == ELobbyUpdateField.AI_TEAM)
 				{
 					if (data.ContainsKey("team") && data["team"].GetInt32() >= 0)
+					{
+						return null;
+					}
+				}
+				else if (field == ELobbyUpdateField.MY_START_POS || field == ELobbyUpdateField.AI_START_POS)
+				{
+					// the two fields name the value differently
+					if ((data.ContainsKey("startpos") && data["startpos"].GetInt32() >= 0)
+						|| (data.ContainsKey("start_pos") && data["start_pos"].GetInt32() >= 0))
 					{
 						return null;
 					}
