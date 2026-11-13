@@ -33,7 +33,7 @@ namespace GenOnlineService
 
     public static class ExternalLeaderboardsClient
     {
-        // TheSuperHackers @bugfix bill-rich 16/10/2026 The external leaderboard is optional. Every
+        // The external leaderboard is optional. Every
         // caller used to find out it was absent by catching the config exception, once per match
         // (publication) or once per login (Elo lookup), and logging it as an error each time.
         public static bool IsPostConfigured => HasConfigValue("PostUrl") && HasConfigValue("PostToken");
