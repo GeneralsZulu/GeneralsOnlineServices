@@ -39,6 +39,9 @@ namespace GenOnlineService.Controllers
 		}
 
 		public PlayerStats? stats { get; set; } = null;
+
+		// JSON from NetForm (last 5 games' network and PC form), null when unknown.
+		public string? netform { get; set; } = null;
 	}
 
     public class RouteHandler_GET_PlayerStatsBatch_Result : APIResult
@@ -108,6 +111,7 @@ namespace GenOnlineService.Controllers
 				else
 				{
 					result.stats = playerStats;
+					result.netform = NetForm.Get(await Database.Users.GetDisplayName(db, userID));
 				}
 
 				return result;
@@ -119,6 +123,7 @@ namespace GenOnlineService.Controllers
 			}
 
 			result.stats = userData.GameStats;
+			result.netform = NetForm.Get(userData.m_strDisplayName);
 			return result;
 		}
 
