@@ -777,7 +777,7 @@ namespace GenOnlineService
 		public UInt32 StartingCash { get; private set; } = 0;
 		public bool IsLimitSuperweapons { get; private set; } = false;
 
-		// While set, every occupied slot's faction and team are locked to Random.
+		// While set, every occupied slot's faction, team and start spot are locked to Random.
 		// The host's Randomize roll still resolves them to concrete values: it
 		// arrives as a bulk slot update, which the enforcement deliberately skips.
 		// Not a user favorite and not persisted: it is a rule for this lobby.
@@ -1303,9 +1303,9 @@ public async Task FinalizeACChecks()
 			if (LobbyType == ELobbyType.CustomGame)
 			{
 
-				// if vanilla teams, dont apply favorite
+				// if vanilla teams or enforce random, dont apply favorite
 				int sideToUse = lobbyPrefs.favorite_side;
-				if (IsVanillaTeamsOnly)
+				if (IsVanillaTeamsOnly || IsEnforceRandom)
 				{
 					sideToUse = -1;
 				}
@@ -1692,7 +1692,7 @@ public async Task FinalizeACChecks()
 				// means the same thing whether the lobby filled before or after.
 				foreach (var member in Members)
 				{
-					member.ForceRandomSideAndTeam();
+					member.ForceRandomSlot();
 				}
 			}
 
@@ -2318,14 +2318,20 @@ public async Task FinalizeACChecks()
 		}
 
 		/// <summary>
-		/// Puts this member back on a random faction and a random team, for a host who has
+		/// Puts this member back on a random faction, team and start spot, for a host who has
 		/// just switched enforce-random on. An observer (side -2) keeps the side that makes
 		/// it an observer; only a concrete faction is taken away. Favorites are left alone:
 		/// the player did not change their preference, the lobby stopped honouring it.
 		/// </summary>
-		public void ForceRandomSideAndTeam()
+		public void ForceRandomSlot()
 		{
 			bool bChanged = false;
+
+			if (StartingPosition >= 0)
+			{
+				StartingPosition = -1;
+				bChanged = true;
+			}
 
 			if (Side >= 0)
 			{
