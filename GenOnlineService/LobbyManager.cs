@@ -814,6 +814,58 @@ namespace GenOnlineService
 		public UInt32 ResumeHandoffFrame { get; private set; } = 0;
 		public UInt32 ResumeReplayGeneration { get; private set; } = 0; // bumped on every arm, so guests can tell a fresh upload from the one they hold
 
+		// Rejoin a match in progress. A human who leaves an INGAME lobby is remembered here with
+		// the slot they held; the same account may join again and gets that slot back. One of the
+		// remaining members (RejoinUploader) is then asked to upload its replay of the match so
+		// far (the resume_replay store) and to report the frame the match is held at
+		// (RejoinFrame); the returning client re-simulates up to that frame and steps back in.
+		public readonly ConcurrentDictionary<Int64, LobbyMember> DepartedIngame = new();
+		public Int64 RejoinUser { get; private set; } = -1;
+		public Int64 RejoinUploader { get; private set; } = -1;
+		public UInt32 RejoinGeneration { get; private set; } = 0;	// bumped per rejoin, so clients act once
+		public UInt32 RejoinFrame { get; private set; } = 0;		// 0 until the uploader says the replay is ready
+		public UInt32 RejoinRunAhead { get; private set; } = 0;	// the match's run-ahead right now: every player must use the same one
+		public Int64 RejoinRouterUser { get; private set; } = -1;	// the match's packet router right now, as the uploader sees it
+		public UInt32 RejoinRefusedGeneration { get; private set; } = 0;	// the remaining players had already dropped them
+
+		private Int64 PickRejoinUploaderLocked(Int64 rejoiningUserID)
+		{
+			foreach (LobbyMember memberEntry in Members)
+			{
+				if (memberEntry != null && memberEntry.IsHuman() && memberEntry.UserID != rejoiningUserID
+					&& WebSocketManager.GetSessionFromUser(memberEntry.UserID, EUserSessionType.GameClient) != null)
+				{
+					return memberEntry.UserID;
+				}
+			}
+			return -1;
+		}
+
+		public void SetRejoinReady(Int64 fromUserID, UInt32 frame, Int64 routerUserID, UInt32 runAhead)
+		{
+			if (fromUserID != RejoinUploader || RejoinUser == -1 || frame == 0)
+			{
+				return;
+			}
+			RejoinRouterUser = routerUserID;
+			RejoinRunAhead = runAhead;
+			RejoinFrame = frame;
+			Console.WriteLine("[Lobby {0}] Rejoin: replay for user {1} ready from user {2}, held at frame {3}", LobbyID, RejoinUser, fromUserID, frame);
+			DirtyRetransmitLobbyList();
+		}
+
+		public void RefuseRejoin(Int64 fromUserID)
+		{
+			if (fromUserID != RejoinUploader || RejoinUser == -1)
+			{
+				return;
+			}
+			Console.WriteLine("[Lobby {0}] Rejoin: user {1} was already dropped from the match (says user {2})", LobbyID, RejoinUser, fromUserID);
+			DepartedIngame.TryRemove(RejoinUser, out _);
+			RejoinRefusedGeneration = RejoinGeneration;
+			DirtyRetransmitLobbyList();
+		}
+
 		public const long ResumeReplayMaxBytes = 16 * 1024 * 1024;
 		public const long ResumeReplayTotalCapBytes = 256L * 1024 * 1024; // across every lobby the service holds
 		private static long s_resumeReplayBytesInUse = 0;
@@ -1220,6 +1272,34 @@ public async Task FinalizeACChecks()
 					return false;
 				};
 
+				if (State == ELobbyState.INGAME
+					&& DepartedIngame.TryGetValue(playerSession.m_UserID, out LobbyMember? departed)
+					&& GetMemberFromUserID(playerSession.m_UserID) == null
+					&& departed.SlotIndex < Members.Length
+					&& Members[departed.SlotIndex].SlotState == EPlayerType.SLOT_OPEN)
+				{
+					Int64 uploader = PickRejoinUploaderLocked(playerSession.m_UserID);
+					if (uploader == -1)
+					{
+						return refuse("rejoin: nobody left in the match to supply the replay");
+					}
+
+					LobbyMember returning = new LobbyMember(this, playerSession, playerSession.m_UserID, departed.DisplayName, departed.DisplayNameNotDeduped,
+						userPreferredPort, departed.Side, departed.Color, departed.StartingPosition, EPlayerType.SLOT_PLAYER, departed.SlotIndex, true);
+					returning.UpdateTeam(departed.Team);
+					DepartedIngame.TryRemove(playerSession.m_UserID, out _);
+
+					RejoinUser = playerSession.m_UserID;
+					RejoinUploader = uploader;
+					RejoinFrame = 0;
+					++RejoinGeneration;
+					Console.WriteLine("[Lobby {0}] Rejoin: user {1} is back in slot {2}, generation {3}, replay asked of user {4}",
+						LobbyID, playerSession.m_UserID, departed.SlotIndex, RejoinGeneration, uploader);
+
+					FinishMemberJoinLocked(returning, playerSession, userPreferredPort);
+					return true;
+				}
+
 				if (State != ELobbyState.GAME_SETUP)
 				{
 					return refuse("lobby is not in setup");
@@ -1350,7 +1430,21 @@ public async Task FinalizeACChecks()
 				newMember = new LobbyMember(this, playerSession, playerSession.m_UserID, strDisplayName, strOriginalDisplayName, userPreferredPort, sideToUse, -1, -1, EPlayerType.SLOT_PLAYER, slotIndex, bHasMap);
 			}
 
-			Members[slotIndex] = newMember;
+			FinishMemberJoinLocked(newMember, playerSession, userPreferredPort);
+
+			// Notify lobby members and room browsers.
+			DirtyRetransmitLobbyList();
+
+			Console.WriteLine("User {0} joined lobby {1}: slot {2}", playerSession.m_UserID, LobbyID, slotIndex);
+			return true;
+			});
+		}
+
+		// The part of a join that is the same for a fresh member and a returning one: take the slot,
+		// attach the session, start signalling with everyone already here. Lobby gate held.
+		private void FinishMemberJoinLocked(LobbyMember newMember, UserSession playerSession, UInt16 userPreferredPort)
+		{
+			Members[newMember.SlotIndex] = newMember;
 			TimeMemberLeft[playerSession.m_UserID] = DateTime.UnixEpoch;
 
 			// Lobby members leave public-room presence.
@@ -1407,13 +1501,6 @@ public async Task FinalizeACChecks()
 				}
 			}
 			// END NETWORK SIGNALLING
-
-			// Notify lobby members and room browsers.
-			DirtyRetransmitLobbyList();
-
-			Console.WriteLine("User {0} joined lobby {1}: slot {2}", playerSession.m_UserID, LobbyID, slotIndex);
-			return true;
-			});
 		}
 
 		public void SendPeerTeardownToDepartingMember(LobbyMember departingMember)
@@ -1461,6 +1548,15 @@ public async Task FinalizeACChecks()
 					|| !ReferenceEquals(Members[member.SlotIndex], member))
 				{
 					return Task.FromResult(false);
+				}
+
+				if (State == ELobbyState.INGAME && member.IsHuman())
+				{
+					DepartedIngame[member.UserID] = member;	// may come back, see AddMember
+					if (member.UserID == RejoinUser)
+					{
+						RejoinUser = -1;
+					}
 				}
 
 				LobbyMember placeholderMember = new LobbyMember(this, null, -1, String.Empty, String.Empty, 0, -1, -1, -1, EPlayerType.SLOT_OPEN, member.SlotIndex, true);
@@ -2548,7 +2644,7 @@ public async Task FinalizeACChecks()
 			}
 		}
 
-		public List<Lobby> GetAllLobbies(Int16 selectedRoomID, bool bIncludePassword, bool bAllowInSetup, bool bAllowInGame, bool bAllowCompleted, bool bIncludeAllNetworkRooms)
+		public List<Lobby> GetAllLobbies(Int16 selectedRoomID, bool bIncludePassword, bool bAllowInSetup, bool bAllowInGame, bool bAllowCompleted, bool bIncludeAllNetworkRooms, Int64 rejoinableForUserID = -1)
 		{
 			List<Lobby> listLobbies = new List<Lobby>();
 			foreach (var kvp in m_dictLobbies)
@@ -2576,7 +2672,9 @@ public async Task FinalizeACChecks()
 					bMeetsCriteria = false;
 				}
 
-				if (lobby.State == ELobbyState.INGAME && !bAllowInGame)
+				// a match in progress is listed only for a player who dropped out of it and may rejoin
+				if (lobby.State == ELobbyState.INGAME && !bAllowInGame
+					&& (rejoinableForUserID == -1 || !lobby.DepartedIngame.ContainsKey(rejoinableForUserID)))
 				{
 					bMeetsCriteria = false;
 				}

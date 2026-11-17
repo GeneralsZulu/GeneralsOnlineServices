@@ -146,7 +146,12 @@ namespace GenOnlineService.Controllers
 		HOST_ACTION_ALIGN_SLOTS = 23,
 		// FFA mode: the client hides who is who
 		// from the players. The service only stores and relays the flag.
-		LOBBY_FFA_MODE = 24
+		LOBBY_FFA_MODE = 24,
+		// Rejoin a match in progress (see Lobby.DepartedIngame): the member asked for its replay
+		// says the upload is complete and which frame the match is held at, or that the
+		// returning player had already been dropped from the match.
+		REJOIN_READY = 25,
+		REJOIN_REFUSE = 26
     };
 
 	public class RouteHandler_ResumeReplay_Result : APIResult
@@ -445,7 +450,9 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY] = ELobbyUpdatePermissions.Anyone,
 			[ELobbyUpdateField.LOBBY_ENFORCE_RANDOM] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner,
-			[ELobbyUpdateField.LOBBY_FFA_MODE] = ELobbyUpdatePermissions.LobbyOwner
+			[ELobbyUpdateField.LOBBY_FFA_MODE] = ELobbyUpdatePermissions.LobbyOwner,
+			[ELobbyUpdateField.REJOIN_READY] = ELobbyUpdatePermissions.Anyone,
+			[ELobbyUpdateField.REJOIN_REFUSE] = ELobbyUpdatePermissions.Anyone
 		};
 
 		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
@@ -583,6 +590,8 @@ namespace GenOnlineService.Controllers
 			if (field != ELobbyUpdateField.HOST_ACTION_FORCE_START
 				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_MAP
 				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY
+				&& field != ELobbyUpdateField.REJOIN_READY
+				&& field != ELobbyUpdateField.REJOIN_REFUSE
 				&& field != ELobbyUpdateField.HOST_ACTION_KICK_USER)
 			{
 				lobby.ResetReadyStates();
@@ -1018,6 +1027,33 @@ namespace GenOnlineService.Controllers
 					return null;
 				}
 			}
+			else if (field == ELobbyUpdateField.REJOIN_READY)
+			{
+				if (data.ContainsKey("frame") && data["frame"].TryGetUInt32(out UInt32 rejoinFrame))
+				{
+					Int64 routerUser = -1;
+					if (data.ContainsKey("router_user"))
+					{
+						data["router_user"].TryGetInt64(out routerUser);
+					}
+					UInt32 runAhead = 0;
+					if (data.ContainsKey("run_ahead"))
+					{
+						data["run_ahead"].TryGetUInt32(out runAhead);
+					}
+					lobby.SetRejoinReady(SourceMember.UserID, rejoinFrame, routerUser, runAhead);
+				}
+				else
+				{
+					Response.StatusCode = (int)HttpStatusCode.BadRequest;
+					m_strFieldUpdateError = "bad frame";
+					return null;
+				}
+			}
+			else if (field == ELobbyUpdateField.REJOIN_REFUSE)
+			{
+				lobby.RefuseRejoin(SourceMember.UserID);
+			}
 			else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY)
 			{
 				// whether this member holds a usable copy of the resume source (the way has_map works)
@@ -1084,7 +1120,8 @@ namespace GenOnlineService.Controllers
 				Response.StatusCode = (int)HttpStatusCode.NotFound;
 				return result;
 			}
-			if (user_id == -1 || lobby.Owner != user_id)
+			// the host (resume from replay), or the member asked to supply a rejoining player
+			if (user_id == -1 || (lobby.Owner != user_id && lobby.RejoinUploader != user_id))
 			{
 				Response.StatusCode = (int)HttpStatusCode.Unauthorized;
 				return result;
