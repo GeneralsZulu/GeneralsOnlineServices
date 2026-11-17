@@ -144,7 +144,7 @@ namespace GenOnlineService.Controllers
 							bIncludeAllNetworkRooms = true;
 						}
 
-						lstLobbies = _lobbyManager.GetAllLobbies(selectedRoomID, true, true, false, false, bIncludeAllNetworkRooms);
+						lstLobbies = _lobbyManager.GetAllLobbies(selectedRoomID, true, true, false, false, bIncludeAllNetworkRooms, user_id);
 
 						List<Lobby> lstLobbiesToRemove = new();
 
