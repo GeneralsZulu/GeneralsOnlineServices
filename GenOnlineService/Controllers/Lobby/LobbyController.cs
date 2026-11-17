@@ -151,7 +151,11 @@ namespace GenOnlineService.Controllers
 		// says the upload is complete and which frame the match is held at, or that the
 		// returning player had already been dropped from the match.
 		REJOIN_READY = 25,
-		REJOIN_REFUSE = 26
+		REJOIN_REFUSE = 26,
+		// Mismatch resync: a member in the match asks to rebuild its game (REJOIN_REQUEST), and
+		// any returning or resyncing client reports whether its state matched after catching up.
+		REJOIN_REQUEST = 27,
+		REJOIN_DONE = 28
     };
 
 	public class RouteHandler_ResumeReplay_Result : APIResult
@@ -452,7 +456,9 @@ namespace GenOnlineService.Controllers
 			[ELobbyUpdateField.HOST_ACTION_ALIGN_SLOTS] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.LOBBY_FFA_MODE] = ELobbyUpdatePermissions.LobbyOwner,
 			[ELobbyUpdateField.REJOIN_READY] = ELobbyUpdatePermissions.Anyone,
-			[ELobbyUpdateField.REJOIN_REFUSE] = ELobbyUpdatePermissions.Anyone
+			[ELobbyUpdateField.REJOIN_REFUSE] = ELobbyUpdatePermissions.Anyone,
+			[ELobbyUpdateField.REJOIN_REQUEST] = ELobbyUpdatePermissions.Anyone,
+			[ELobbyUpdateField.REJOIN_DONE] = ELobbyUpdatePermissions.Anyone
 		};
 
 		// Resume-from-replay source transfer (see HOST_ACTION_ARM_RESUME): the host posts the file in
@@ -592,6 +598,8 @@ namespace GenOnlineService.Controllers
 				&& field != ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY
 				&& field != ELobbyUpdateField.REJOIN_READY
 				&& field != ELobbyUpdateField.REJOIN_REFUSE
+				&& field != ELobbyUpdateField.REJOIN_REQUEST
+				&& field != ELobbyUpdateField.REJOIN_DONE
 				&& field != ELobbyUpdateField.HOST_ACTION_KICK_USER)
 			{
 				lobby.ResetReadyStates();
@@ -1041,7 +1049,12 @@ namespace GenOnlineService.Controllers
 					{
 						data["run_ahead"].TryGetUInt32(out runAhead);
 					}
-					lobby.SetRejoinReady(SourceMember.UserID, rejoinFrame, routerUser, runAhead);
+					Int64 rejoinCRC = -1;
+					if (data.ContainsKey("crc"))
+					{
+						data["crc"].TryGetInt64(out rejoinCRC);
+					}
+					lobby.SetRejoinReady(SourceMember.UserID, rejoinFrame, routerUser, runAhead, rejoinCRC);
 				}
 				else
 				{
@@ -1053,6 +1066,19 @@ namespace GenOnlineService.Controllers
 			else if (field == ELobbyUpdateField.REJOIN_REFUSE)
 			{
 				lobby.RefuseRejoin(SourceMember.UserID);
+			}
+			else if (field == ELobbyUpdateField.REJOIN_REQUEST)
+			{
+				Int64 uploaderHint = -1;
+				if (data.ContainsKey("uploader"))
+				{
+					data["uploader"].TryGetInt64(out uploaderHint);
+				}
+				lobby.RequestResync(SourceMember.UserID, uploaderHint);
+			}
+			else if (field == ELobbyUpdateField.REJOIN_DONE)
+			{
+				lobby.SetRejoinDone(SourceMember.UserID, data.ContainsKey("ok") && data["ok"].ValueKind == JsonValueKind.True);
 			}
 			else if (field == ELobbyUpdateField.LOCAL_PLAYER_HAS_RESUME_REPLAY)
 			{

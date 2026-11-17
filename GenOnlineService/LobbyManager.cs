@@ -827,6 +827,48 @@ namespace GenOnlineService
 		public UInt32 RejoinRunAhead { get; private set; } = 0;	// the match's run-ahead right now: every player must use the same one
 		public Int64 RejoinRouterUser { get; private set; } = -1;	// the match's packet router right now, as the uploader sees it
 		public UInt32 RejoinRefusedGeneration { get; private set; } = 0;	// the remaining players had already dropped them
+		// Game state CRC of the uploader on RejoinFrame (-1 unknown). The returning client compares
+		// its own after catching up, and reports the result as RejoinDone.
+		public Int64 RejoinCRC { get; private set; } = -1;
+		public UInt32 RejoinDoneGeneration { get; private set; } = 0;
+		public bool RejoinDoneOk { get; private set; } = false;
+
+		// A member still in the match whose game went out of sync asks to rebuild it the same
+		// way a returning player does. It names a player it saw agree with the majority.
+		public void RequestResync(Int64 fromUserID, Int64 uploaderHint)
+		{
+			if (State != ELobbyState.INGAME || GetMemberFromUserID(fromUserID) == null)
+			{
+				return;
+			}
+			LobbyMember? hinted = uploaderHint == fromUserID ? null : GetMemberFromUserID(uploaderHint);
+			Int64 uploader = (hinted != null && hinted.IsHuman()
+				&& WebSocketManager.GetSessionFromUser(uploaderHint, EUserSessionType.GameClient) != null)
+				? uploaderHint : PickRejoinUploaderLocked(fromUserID);
+			if (uploader == -1)
+			{
+				return;
+			}
+			RejoinUser = fromUserID;
+			RejoinUploader = uploader;
+			RejoinFrame = 0;
+			RejoinCRC = -1;
+			++RejoinGeneration;
+			Console.WriteLine("[Lobby {0}] Resync: user {1} asks to rebuild its game, generation {2}, replay asked of user {3}", LobbyID, fromUserID, RejoinGeneration, uploader);
+			DirtyRetransmitLobbyList();
+		}
+
+		public void SetRejoinDone(Int64 fromUserID, bool bOk)
+		{
+			if (fromUserID != RejoinUser)
+			{
+				return;
+			}
+			RejoinDoneGeneration = RejoinGeneration;
+			RejoinDoneOk = bOk;
+			Console.WriteLine("[Lobby {0}] Rejoin: user {1} is done, generation {2}, state matches: {3}", LobbyID, fromUserID, RejoinGeneration, bOk);
+			DirtyRetransmitLobbyList();
+		}
 
 		private Int64 PickRejoinUploaderLocked(Int64 rejoiningUserID)
 		{
@@ -841,7 +883,7 @@ namespace GenOnlineService
 			return -1;
 		}
 
-		public void SetRejoinReady(Int64 fromUserID, UInt32 frame, Int64 routerUserID, UInt32 runAhead)
+		public void SetRejoinReady(Int64 fromUserID, UInt32 frame, Int64 routerUserID, UInt32 runAhead, Int64 crc)
 		{
 			if (fromUserID != RejoinUploader || RejoinUser == -1 || frame == 0)
 			{
@@ -849,6 +891,7 @@ namespace GenOnlineService
 			}
 			RejoinRouterUser = routerUserID;
 			RejoinRunAhead = runAhead;
+			RejoinCRC = crc;
 			RejoinFrame = frame;
 			Console.WriteLine("[Lobby {0}] Rejoin: replay for user {1} ready from user {2}, held at frame {3}", LobbyID, RejoinUser, fromUserID, frame);
 			DirtyRetransmitLobbyList();
@@ -1292,6 +1335,7 @@ public async Task FinalizeACChecks()
 					RejoinUser = playerSession.m_UserID;
 					RejoinUploader = uploader;
 					RejoinFrame = 0;
+					RejoinCRC = -1;
 					++RejoinGeneration;
 					Console.WriteLine("[Lobby {0}] Rejoin: user {1} is back in slot {2}, generation {3}, replay asked of user {4}",
 						LobbyID, playerSession.m_UserID, departed.SlotIndex, RejoinGeneration, uploader);
